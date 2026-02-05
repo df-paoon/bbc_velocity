@@ -1,0 +1,438 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>BBC World Service — Speed Top / Player Bottom</title>
+  <style>
+    :root{
+      color-scheme: light dark;
+      --bg-light:#f6f7f9; --bg-dark:#0f1115;
+      --fg-light:#111;    --fg-dark:#f5f5f5;
+      --card-light:#fff;  --card-dark:#171a21;
+      --border-light:#dcdfe6; --border-dark:#2a2f3a;
+      --accent:#0077cc;
+      --ok:#16a34a;
+      --muted: rgba(127,127,127,.75);
+    }
+    body{
+      margin:0;
+      font-family:system-ui,-apple-system,"Segoe UI",Roboto,"Noto Sans",Arial,sans-serif;
+      background:var(--bg-light); color:var(--fg-light);
+      transition:background .3s,color .3s;
+      /* 下部プレーヤーの高さ分だけ余白を確保（操作が被らないように） */
+      padding: 16px 16px 150px 16px;
+    }
+    body.dark{ background:var(--bg-dark); color:var(--fg-dark); }
+    .shell{ max-width:900px; margin:0 auto; }
+
+    /* Top header */
+    .topbar{
+      display:flex; align-items:center; justify-content:space-between;
+      gap:12px; margin-bottom:14px;
+    }
+    .theme-toggle{
+      font-size:1.2rem;
+      padding:.5rem .75rem;
+      border-radius:12px;
+      border:1px solid rgba(127,127,127,.35);
+      background:transparent;
+      color:inherit;
+      cursor:pointer;
+    }
+    .theme-toggle:hover{ background: rgba(127,127,127,.08); }
+
+    /* Speed display (big, centered) */
+    .speedHero{
+      text-align:center;
+      border-radius:18px;
+      border:1px solid var(--border-light);
+      background:var(--card-light);
+      padding:18px 14px;
+      transition:background .3s, border .3s;
+    }
+    body.dark .speedHero{
+      background:var(--card-dark);
+      border:1px solid var(--border-dark);
+    }
+    .speedLabel{
+      font-size:14px;
+      letter-spacing:.16em;
+      text-transform:uppercase;
+      opacity:.75;
+      margin-bottom:6px;
+    }
+    .speedRow{
+      display:flex;
+      align-items:baseline;
+      justify-content:center;
+      gap:10px;
+      flex-wrap:wrap;
+    }
+    .speedVal{
+      font-size:64px;
+      font-weight:900;
+      line-height:1;
+      letter-spacing:0.5px;
+      font-variant-numeric: tabular-nums;
+    }
+    .speedUnit{
+      font-size:20px;
+      opacity:.85;
+    }
+    .gpsMeta{
+      margin-top:8px;
+      font-family: ui-monospace, Menlo, Consolas, monospace;
+      font-size:13px;
+      opacity:.75;
+    }
+
+    /* Small status card */
+    .statusCard{
+      margin-top:12px;
+      border-radius:14px;
+      border:1px solid var(--border-light);
+      background:var(--card-light);
+      padding:12px 14px;
+      transition:background .3s, border .3s;
+    }
+    body.dark .statusCard{
+      background:var(--card-dark);
+      border:1px solid var(--border-dark);
+    }
+    .mono{ font-family: ui-monospace, Menlo, Consolas, monospace; }
+    .ok{ color: var(--ok); font-weight:700; }
+    .hint{ margin-top:8px; font-size:.92rem; opacity:.8; }
+
+    /* Bottom player bar (fixed) */
+    .playerBar{
+      position:fixed;
+      left:0; right:0; bottom:0;
+      padding:10px 12px 14px 12px;
+      border-top:1px solid var(--border-light);
+      background:rgba(255,255,255,.92);
+      backdrop-filter: blur(10px);
+      transition: background .3s, border .3s;
+      z-index:900;
+    }
+    body.dark .playerBar{
+      border-top:1px solid var(--border-dark);
+      background:rgba(23,26,33,.92);
+    }
+    .playerInner{
+      max-width:900px;
+      margin:0 auto;
+    }
+    audio{
+      width:100%;
+      height:40px;
+    }
+    .playerTopRow{
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:10px;
+      margin-bottom:8px;
+    }
+    .playerTitle{
+      font-weight:700;
+      opacity:.9;
+    }
+    .miniBtn{
+      font-size:1rem;
+      padding:.45rem .7rem;
+      border-radius:12px;
+      border:1px solid rgba(127,127,127,.35);
+      background:transparent;
+      color:inherit;
+      cursor:pointer;
+      white-space:nowrap;
+    }
+    .miniBtn:hover{ background: rgba(127,127,127,.08); }
+
+    /* Floating play/reload buttons */
+    #reloadBtn, #floatPlayBtn{
+      position:fixed;
+      right:16px;
+      width:66px;height:66px;
+      border-radius:50%;
+      border:none;
+      color:#fff;
+      box-shadow:0 2px 10px rgba(0,0,0,.35);
+      cursor:pointer;
+      z-index:1000;
+      font-size:2rem;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      transition:transform .2s, background .3s;
+      user-select:none;
+    }
+    #reloadBtn{ bottom:20px; background:var(--accent); }
+    #reloadBtn:hover{ transform:scale(1.08); }
+    body.dark #reloadBtn{ background:#3399ff; }
+
+    #floatPlayBtn{
+      bottom:100px;
+      background:#28a745;
+      display:none; /* need only when autoplay blocked */
+    }
+    #floatPlayBtn:hover{ transform:scale(1.08); }
+    body.dark #floatPlayBtn{ background:#34c759; }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <div class="topbar">
+      <div class="mono" style="opacity:.75;">BBC World Service + Speed</div>
+      <button class="theme-toggle" id="themeToggle" title="Toggle dark/light">🌙</button>
+    </div>
+
+    <!-- Big speed centered at top -->
+    <div class="speedHero">
+      <div class="speedLabel">Speed</div>
+      <div class="speedRow">
+        <span id="speedVal" class="speedVal">--</span>
+        <span class="speedUnit">km/h</span>
+      </div>
+      <div class="gpsMeta"><span id="gpsStatus">GPS: idle</span></div>
+    </div>
+
+    <!-- Status / notes -->
+    <div class="statusCard">
+      <div class="mono"><span id="status">Loading…</span></div>
+      <div class="hint">
+        GPSは許可が必要です（HTTPSで安定）。運転中の注視・操作は危険なので、設定は停車中に。
+      </div>
+    </div>
+  </div>
+
+  <!-- Bottom fixed player bar -->
+  <div class="playerBar">
+    <div class="playerInner">
+      <div class="playerTopRow">
+        <div class="playerTitle">BBC World Service (Live)</div>
+        <button id="playBtn" class="miniBtn" hidden>▶︎ Play</button>
+      </div>
+      <audio id="player" preload="metadata" autoplay playsinline controls></audio>
+      <div class="hint" style="margin-top:6px;">
+        右下：▶︎（再生）／🔄（再読み込み）。Firefox は 🔒→ 自動再生を「許可」に。
+      </div>
+      <div id="err" class="mono" style="margin-top:6px; color:#e05; font-weight:700;"></div>
+    </div>
+  </div>
+
+  <!-- Floating buttons -->
+  <button id="floatPlayBtn" title="Play">▶︎</button>
+  <button id="reloadBtn" title="Reload">🔄</button>
+
+  <!-- hls.js for desktop HLS -->
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.13/dist/hls.min.js" crossorigin="anonymous"></script>
+  <script>
+    /* ---- theme ---- */
+    const body = document.body;
+    const prefersDark = window.matchMedia("(prefers-color-scheme: dark)");
+    const themeToggle = document.getElementById("themeToggle");
+    function setTheme(dark){
+      if(dark){ body.classList.add("dark"); themeToggle.textContent="🌞"; }
+      else { body.classList.remove("dark"); themeToggle.textContent="🌙"; }
+    }
+    setTheme(prefersDark.matches);
+    prefersDark.addEventListener("change", e => setTheme(e.matches));
+    themeToggle.onclick = () => setTheme(!body.classList.contains("dark"));
+
+    /* ---- GPS speed ---- */
+    (function(){
+      const speedVal = document.getElementById("speedVal");
+      const gpsStatus = document.getElementById("gpsStatus");
+
+      let watchId = null;
+      let last = null; // {lat, lon, t}
+
+      function setGpsStatus(msg){ gpsStatus.textContent = "GPS: " + msg; }
+
+      function toRad(x){ return x * Math.PI / 180; }
+      function haversineMeters(a, b){
+        const R = 6371000;
+        const dLat = toRad(b.lat - a.lat);
+        const dLon = toRad(b.lon - a.lon);
+        const lat1 = toRad(a.lat), lat2 = toRad(b.lat);
+        const s = Math.sin(dLat/2)**2 + Math.cos(lat1)*Math.cos(lat2)*Math.sin(dLon/2)**2;
+        return 2 * R * Math.asin(Math.sqrt(s));
+      }
+
+      function startGps(){
+        if(!("geolocation" in navigator)){
+          setGpsStatus("not supported");
+          return;
+        }
+        if(watchId !== null) return;
+
+        setGpsStatus("requesting…");
+        watchId = navigator.geolocation.watchPosition(
+          (pos) => {
+            const c = pos.coords;
+            const t = pos.timestamp;
+            const now = { lat: c.latitude, lon: c.longitude, t };
+
+            let speed_mps = null;
+
+            if(typeof c.speed === "number" && isFinite(c.speed)){
+              speed_mps = c.speed; // m/s
+            } else if(last) {
+              const dt = (now.t - last.t) / 1000;
+              if(dt > 0.5){
+                const d = haversineMeters(last, now);
+                speed_mps = d / dt;
+              }
+            }
+            last = now;
+
+            if(speed_mps === null){
+              speedVal.textContent = "--";
+              setGpsStatus("fix ✓");
+              return;
+            }
+
+            const kmh = Math.max(0, speed_mps * 3.6);
+            speedVal.textContent = (kmh < 10 ? kmh.toFixed(1) : kmh.toFixed(0));
+
+            const acc = (typeof c.accuracy === "number") ? (" ±" + Math.round(c.accuracy) + "m") : "";
+            setGpsStatus("fix ✓" + acc);
+          },
+          (err) => {
+            speedVal.textContent = "--";
+            if(err && err.code === 1) setGpsStatus("denied");
+            else if(err && err.code === 2) setGpsStatus("unavailable");
+            else if(err && err.code === 3) setGpsStatus("timeout");
+            else setGpsStatus("error");
+          },
+          {
+            enableHighAccuracy: true,
+            maximumAge: 1000,
+            timeout: 10000
+          }
+        );
+      }
+
+      // start immediately (prompts permission)
+      startGps();
+
+      // stop watch on exit
+      function stopGps(){
+        try{
+          if(watchId !== null){
+            navigator.geolocation.clearWatch(watchId);
+            watchId = null;
+          }
+        }catch{}
+      }
+      window.addEventListener("pagehide", stopGps);
+      window.addEventListener("beforeunload", stopGps);
+    })();
+
+    /* ---- audio ---- */
+    (function(){
+      const HLS_URL = "https://as-hls-ww.live.cf.md.bbci.co.uk/pool_87948813/live/ww/bbc_world_service/bbc_world_service.isml/bbc_world_service-audio=96000.norewind.m3u8";
+      const MP3_URL = "https://stream.live.vc.bbcmedia.co.uk/bbc_world_service";
+
+      const audio        = document.getElementById("player");
+      const statusEl     = document.getElementById("status");
+      const playBtn      = document.getElementById("playBtn");
+      const floatPlayBtn = document.getElementById("floatPlayBtn");
+      const reloadBtn    = document.getElementById("reloadBtn");
+      const errEl        = document.getElementById("err");
+
+      const ua = navigator.userAgent || "";
+      const isAndroid = /Android/i.test(ua);
+
+      let hls = null;
+
+      function setStatus(msg, ok=false){
+        statusEl.textContent = msg;
+        statusEl.className = ok ? "ok mono" : "mono";
+      }
+
+      async function tryPlay(){
+        try{
+          await audio.play();
+          setStatus("Playing ✓", true);
+          playBtn.hidden = true;
+          floatPlayBtn.style.display = "none";
+        }catch(e){
+          setStatus("Autoplay blocked — press ▶︎");
+          playBtn.hidden = false;
+          floatPlayBtn.style.display = "flex";
+        }
+      }
+
+      function useMp3(){
+        audio.src = MP3_URL;
+        audio.load();
+        tryPlay();
+      }
+
+      function cleanupHlsOnly(){
+        try{ if(hls){ hls.destroy(); hls = null; } }catch{}
+      }
+
+      function useHls(){
+        if(audio.canPlayType("application/vnd.apple.mpegurl")){
+          audio.src = HLS_URL;
+          audio.addEventListener("loadedmetadata", tryPlay, { once:true });
+          audio.addEventListener("error", () => {
+            errEl.textContent = "HLS error — switching to MP3.";
+            useMp3();
+          }, { once:true });
+          return;
+        }
+        if(window.Hls && window.Hls.isSupported()){
+          hls = new Hls({
+            autoStartLoad:true,
+            maxBufferLength:10,
+            backBufferLength:10,
+            liveSyncDurationCount:3,
+            liveMaxLatencyDurationCount:10
+          });
+          hls.attachMedia(audio);
+          hls.on(Hls.Events.MEDIA_ATTACHED, () => hls.loadSource(HLS_URL));
+          hls.on(Hls.Events.MANIFEST_PARSED, () => tryPlay());
+          hls.on(Hls.Events.ERROR, (ev, data) => {
+            if(data && data.fatal){
+              errEl.textContent = "HLS fatal error — switching to MP3.";
+              cleanupHlsOnly();
+              useMp3();
+            }
+          });
+        } else {
+          useMp3();
+        }
+      }
+
+      function cleanupAll(){
+        try{ audio.pause(); }catch{}
+        try{ audio.removeAttribute("src"); audio.load(); }catch{}
+        cleanupHlsOnly();
+      }
+
+      function start(){
+        setStatus("Loading…");
+        if(isAndroid) useMp3(); else useHls();
+      }
+
+      playBtn.addEventListener("click", tryPlay);
+      floatPlayBtn.addEventListener("click", tryPlay);
+
+      reloadBtn.addEventListener("click", () => {
+        cleanupAll();
+        setTimeout(() => location.reload(), 0);
+      });
+
+      window.addEventListener("beforeunload", cleanupAll);
+      window.addEventListener("pagehide", cleanupAll);
+
+      start();
+    })();
+  </script>
+</body>
+</html>
