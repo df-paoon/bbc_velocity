@@ -4,6 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>BBC World Service — Speed Top / Player Bottom</title>
+
   <style>
     :root{
       color-scheme: light dark;
@@ -14,6 +15,7 @@
       --accent:#0077cc;
       --ok:#16a34a;
     }
+
     body{
       margin:0;
       font-family:system-ui,-apple-system,"Segoe UI",Roboto,"Noto Sans",Arial,sans-serif;
@@ -38,8 +40,12 @@
       cursor:pointer;
     }
     .theme-toggle:hover{ background: rgba(127,127,127,.08); }
+    #simToggle.on{
+      border-color: rgba(22,163,74,.75);
+      box-shadow: 0 0 0 2px rgba(22,163,74,.25) inset;
+    }
 
-    /* Speed (big, centered) */
+    /* Speed card */
     .speedHero{
       text-align:center;
       border-radius:18px;
@@ -59,25 +65,53 @@
       opacity:.75;
       margin-bottom:6px;
     }
+
+    /* ===== Speed display (NUMBER truly centered, unit never overlaps) ===== */
     .speedRow{
-      display:flex;
-      align-items:baseline;
-      justify-content:center;
-      gap:10px;
-      flex-wrap:wrap;
+      display: grid;
+      grid-template-columns: 1fr auto 1fr; /* left spacer / number / unit */
+      align-items: baseline;
+      column-gap: 12px;
+
+      direction: ltr;
+      unicode-bidi: isolate;
     }
-    /* ここが 1.5倍（64px → 96px） */
-    .speedVal{
+    .speedUnitGhost{
+      justify-self: end;
+      visibility: hidden;   /* takes space, not visible */
+      white-space: nowrap;
+      font-size: 24px;
+      padding: 0 .25em;
+    }
+    #speedVal{
+      justify-self: center;
+
       font-size:96px;
       font-weight:900;
       line-height:1;
       letter-spacing:0.5px;
       font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+
+      color: var(--spd-color, currentColor);
+      text-shadow: 0 0 18px var(--spd-glow, transparent);
+      transition: color .25s linear, text-shadow .25s linear;
     }
     .speedUnit{
+      justify-self: start;
+
       font-size:24px;
       opacity:.85;
+      white-space:nowrap;
+
+      background: rgba(0,0,0,.08);
+      padding: 0 .25em;
+      border-radius: .4em;
     }
+    body.dark .speedUnit{
+      background: rgba(255,255,255,.10);
+    }
+
     .gpsMeta{
       margin-top:8px;
       font-family: ui-monospace, Menlo, Consolas, monospace;
@@ -169,17 +203,22 @@
     body.dark #floatPlayBtn{ background:#34c759; }
   </style>
 </head>
+
 <body>
   <div class="shell">
     <div class="topbar">
       <div class="mono" style="opacity:.75;">BBC World Service + Speed</div>
-      <button class="theme-toggle" id="themeToggle" title="Toggle dark/light">🌙</button>
+      <div style="display:flex; gap:10px;">
+        <button class="theme-toggle" id="simToggle" title="Toggle speed simulation">SIM</button>
+        <button class="theme-toggle" id="themeToggle" title="Toggle dark/light">🌙</button>
+      </div>
     </div>
 
     <div class="speedHero">
       <div class="speedLabel">Speed</div>
-      <div class="speedRow">
-        <span id="speedVal" class="speedVal">--</span>
+      <div class="speedRow" aria-label="Speed">
+        <span class="speedUnitGhost" aria-hidden="true">km/h</span>
+        <span id="speedVal">--</span>
         <span class="speedUnit">km/h</span>
       </div>
       <div class="gpsMeta"><span id="gpsStatus">GPS: idle</span></div>
@@ -212,295 +251,319 @@
 
   <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.13/dist/hls.min.js" crossorigin="anonymous"></script>
   <script>
-    /* ---- theme ---- */
-    const body = document.body;
-    const prefersDark = window.matchMedia("(prefers-color-scheme: dark)");
-    const themeToggle = document.getElementById("themeToggle");
-    function setTheme(dark){
-      if(dark){ body.classList.add("dark"); themeToggle.textContent="🌞"; }
-      else { body.classList.remove("dark"); themeToggle.textContent="🌙"; }
-    }
-    setTheme(prefersDark.matches);
-    prefersDark.addEventListener("change", e => setTheme(e.matches));
-    themeToggle.onclick = () => setTheme(!body.classList.contains("dark"));
+   /* ---- theme ---- */
+   const body = document.body;
+   const prefersDark = window.matchMedia("(prefers-color-scheme: dark)");
+   const themeToggle = document.getElementById("themeToggle");
+   function setTheme(dark){
+       if(dark){ body.classList.add("dark"); themeToggle.textContent="🌞"; }
+       else { body.classList.remove("dark"); themeToggle.textContent="🌙"; }
+   }
+   setTheme(prefersDark.matches);
+   prefersDark.addEventListener("change", e => setTheme(e.matches));
+   themeToggle.onclick = () => setTheme(!body.classList.contains("dark"));
 
-    /* ---- GPS speed (smoothed) ---- */
-    (function(){
+   /* ---- GPS speed (smoothed) + color + simulation ---- */
+   (function(){
+       const speedEl   = document.getElementById("speedVal");
+       const gpsStatus = document.getElementById("gpsStatus");
+       const simBtn    = document.getElementById("simToggle");
 
-// ===== SIMULATION MODE =====
-const SIM_MODE = new URLSearchParams(location.search).has("sim");
-// 例: https://.../index.html?sim で疑似モード
+       let watchId = null;
+       let last = null; // {lat, lon, t}
 
-function feedSpeedKmh(measuredKmh, accuracyMeters = null){
-  // targetKmh/filteredKmh は下で宣言されている変数を使う前提
-  targetKmh = Math.max(0, measuredKmh);
+       // smoothing
+       let filteredKmh = null;
+       let displayKmh  = null;
+       let lastUiUpdate = 0;
+       let rafId = null;
 
-  // EMA（既存の alpha を流用してOK）
-  const alpha = 0.30;
-  if(filteredKmh == null) filteredKmh = targetKmh;
-  else filteredKmh = filteredKmh + (targetKmh - filteredKmh) * alpha;
+       // sim
+       let simOn = false;
+       let simTimer = null;
+       let simT = 0;
 
-  const acc = (accuracyMeters != null) ? (" ±" + Math.round(accuracyMeters) + "m") : "";
-  setGpsStatus("sim ✓" + acc);
-  startLoop();
-}
+       function setGpsStatus(msg){ gpsStatus.textContent = "GPS: " + msg; }
+       function clamp(x,a,b){ return Math.min(b, Math.max(a,x)); }
 
-function startSim(){
-  setGpsStatus("sim (pattern)");
-  // 0→60→30→80→0 のようなパターンを繰り返す（揺れも少し入れる）
-  let t0 = performance.now();
-  setInterval(() => {
-    const t = (performance.now() - t0) / 1000;
+       function formatKmh(v){
+           if(v == null || !isFinite(v)) return "--";
+           if(v < 10) return v.toFixed(1);
+           return v.toFixed(0);
+       }
 
-    // パターン：ゆっくり加速/減速 + 少しノイズ
-    const base =
-      40 + 25*Math.sin(t*0.35) + 18*Math.sin(t*0.9 + 0.4); // だいたい 0〜80
-    const noise = 2.0*Math.sin(t*6.0); // 揺れ（GPSっぽさ）
-    const kmh = Math.max(0, base + noise);
+       function updateSpeedColor(vKmh){
+           if(vKmh == null || !isFinite(vKmh)){
+               document.body.style.removeProperty("--spd-color");
+               document.body.style.removeProperty("--spd-glow");
+               return;
+           }
+           const v = clamp(vKmh, 0, 120);
+           const t = v / 120;
+           const hue = 120 * (1 - t);
+           const sat = 92;
+           const isDark = document.body.classList.contains("dark");
+           const light = isDark ? 62 : 42;
 
-    feedSpeedKmh(kmh, 8 + 10*Math.abs(Math.sin(t*0.2)));
-  }, 250); // “GPS更新”っぽい周期
-}
-// ===== END SIMULATION MODE =====
-      
-      const speedEl = document.getElementById("speedVal");
-      const gpsStatus = document.getElementById("gpsStatus");
+           const color = "hsl(" + hue + " " + sat + "% " + light + "%)";
+           const glowAlpha = isDark ? (0.20 + 0.25*t) : (0.10 + 0.18*t);
+           const glow = "hsla(" + hue + " " + sat + "% " + light + "% / " + glowAlpha + ")";
 
-      let watchId = null;
-      let last = null; // {lat, lon, t}
+           document.body.style.setProperty("--spd-color", color);
+           document.body.style.setProperty("--spd-glow", glow);
+       }
 
-      // smoothing state
-      let targetKmh = null;      // latest measured speed
-      let filteredKmh = null;    // EMA filtered target
-      let displayKmh = null;     // what we animate toward
-      let lastUiUpdate = 0;      // throttle text updates
-      let rafId = null;
+       function pushTargetSpeed(targetKmh){
+           const alpha = 0.30;
+           if(filteredKmh == null) filteredKmh = targetKmh;
+           else filteredKmh = filteredKmh + (targetKmh - filteredKmh) * alpha;
+       }
 
-      function setGpsStatus(msg){ gpsStatus.textContent = "GPS: " + msg; }
-      function toRad(x){ return x * Math.PI / 180; }
-      function haversineMeters(a, b){
-        const R = 6371000;
-        const dLat = toRad(b.lat - a.lat);
-        const dLon = toRad(b.lon - a.lon);
-        const lat1 = toRad(a.lat), lat2 = toRad(b.lat);
-        const s = Math.sin(dLat/2)**2 + Math.cos(lat1)*Math.cos(lat2)*Math.sin(dLon/2)**2;
-        return 2 * R * Math.asin(Math.sqrt(s));
-      }
+       function tick(ts){
+           if(filteredKmh == null){
+               rafId = requestAnimationFrame(tick);
+               return;
+           }
+           if(displayKmh == null) displayKmh = filteredKmh;
 
-      function formatKmh(v){
-        if(v == null || !isFinite(v)) return "--";
-        if(v < 10) return v.toFixed(1);
-        return v.toFixed(0);
-      }
+           const follow = 0.12;
+           displayKmh = displayKmh + (filteredKmh - displayKmh) * follow;
 
-      // UI animation loop: displayKmh -> filteredKmh smoothly
-      function tick(ts){
-        if(filteredKmh == null){
-          // show placeholder if never got speed
-          rafId = requestAnimationFrame(tick);
-          return;
-        }
-        if(displayKmh == null) displayKmh = filteredKmh;
+           if(ts - lastUiUpdate > 100){
+               const shown = Math.max(0, displayKmh);
+               speedEl.textContent = formatKmh(shown);
+               updateSpeedColor(shown);
+               lastUiUpdate = ts;
+           }
+           rafId = requestAnimationFrame(tick);
+       }
+       function startLoop(){
+           if(rafId == null) rafId = requestAnimationFrame(tick);
+       }
 
-        // "追従の速さ"：0.08〜0.15くらいが車だと自然（大きいほど追従が速い）
-        const follow = 0.12;
-        displayKmh = displayKmh + (filteredKmh - displayKmh) * follow;
+       function toRad(x){ return x * Math.PI / 180; }
+       function haversineMeters(a, b){
+           const R = 6371000;
+           const dLat = toRad(b.lat - a.lat);
+           const dLon = toRad(b.lon - a.lon);
+           const lat1 = toRad(a.lat), lat2 = toRad(b.lat);
+           const s = Math.sin(dLat/2)**2 + Math.cos(lat1)*Math.cos(lat2)*Math.sin(dLon/2)**2;
+           return 2 * R * Math.asin(Math.sqrt(s));
+       }
 
-        // 文字更新は 10Hz 程度に抑える（無駄なDOM更新を減らす）
-        if(ts - lastUiUpdate > 100){
-          speedEl.textContent = formatKmh(Math.max(0, displayKmh));
-          lastUiUpdate = ts;
-        }
-        rafId = requestAnimationFrame(tick);
-      }
+       function startGps(){
+           if(!("geolocation" in navigator)){
+               setGpsStatus("not supported → SIM");
+               enableSim(true);
+               return;
+           }
+           if(watchId !== null) return;
 
-      function startLoop(){
-        if(rafId == null) rafId = requestAnimationFrame(tick);
-      }
+           setGpsStatus("requesting…");
+           startLoop();
 
-      function startGps(){
-        if(!("geolocation" in navigator)){
-          setGpsStatus("not supported");
-          return;
-        }
-        if(watchId !== null) return;
+           watchId = navigator.geolocation.watchPosition(
+               (pos) => {
+                   const c = pos.coords;
+                   const t = pos.timestamp;
+                   const now = { lat: c.latitude, lon: c.longitude, t };
 
-        setGpsStatus("requesting…");
-        startLoop();
+                   let speed_mps = null;
 
-        watchId = navigator.geolocation.watchPosition(
-          (pos) => {
-            const c = pos.coords;
-            const t = pos.timestamp;
-            const now = { lat: c.latitude, lon: c.longitude, t };
+                   if(typeof c.speed === "number" && isFinite(c.speed)){
+                       speed_mps = c.speed;
+                   } else if(last) {
+                       const dt = (now.t - last.t) / 1000;
+                       if(dt > 0.5){
+                           const d = haversineMeters(last, now);
+                           speed_mps = d / dt;
+                       }
+                   }
+                   last = now;
 
-            let speed_mps = null;
+                   if(speed_mps == null){
+                       setGpsStatus("fix ✓");
+                       return;
+                   }
 
-            // Prefer native speed when available
-            if(typeof c.speed === "number" && isFinite(c.speed)){
-              speed_mps = c.speed;
-            } else if(last) {
-              const dt = (now.t - last.t) / 1000;
-              if(dt > 0.5){
-                const d = haversineMeters(last, now);
-                speed_mps = d / dt;
-              }
-            }
-            last = now;
+                   pushTargetSpeed(Math.max(0, speed_mps * 3.6));
 
-            if(speed_mps == null){
-              setGpsStatus("fix ✓");
-              return;
-            }
+                   const acc = (typeof c.accuracy === "number") ? (" ±" + Math.round(c.accuracy) + "m") : "";
+                   setGpsStatus("fix ✓" + acc);
+               },
+               (err) => {
+                   speedEl.textContent = "--";
+                   updateSpeedColor(null);
 
-            targetKmh = Math.max(0, speed_mps * 3.6);
+                   if(err && err.code === 1) setGpsStatus("denied → SIM");
+                   else if(err && err.code === 2) setGpsStatus("unavailable → SIM");
+                   else if(err && err.code === 3) setGpsStatus("timeout → SIM");
+                   else setGpsStatus("error → SIM");
 
-            // EMA on the measured speed to reduce jitter
-            // alpha: 0.25〜0.4くらいが実用的（大きいほど反応速い）
-            const alpha = 0.30;
-            if(filteredKmh == null) filteredKmh = targetKmh;
-            else filteredKmh = filteredKmh + (targetKmh - filteredKmh) * alpha;
+                   enableSim(true);
+               },
+               { enableHighAccuracy: true, maximumAge: 1000, timeout: 10000 }
+           );
+       }
 
-            const acc = (typeof c.accuracy === "number") ? (" ±" + Math.round(c.accuracy) + "m") : "";
-            setGpsStatus("fix ✓" + acc);
-          },
-          (err) => {
-            speedEl.textContent = "--";
-            if(err && err.code === 1) setGpsStatus("denied");
-            else if(err && err.code === 2) setGpsStatus("unavailable");
-            else if(err && err.code === 3) setGpsStatus("timeout");
-            else setGpsStatus("error");
-          },
-          {
-            enableHighAccuracy: true,
-            maximumAge: 1000,
-            timeout: 10000
-          }
-        );
-      }
+       function stopGps(){
+           try{ if(watchId !== null){ navigator.geolocation.clearWatch(watchId); watchId = null; } }catch{}
+           last = null;
+       }
 
-if (SIM_MODE) startSim();
-else startGps();
+       function startSim(){
+           if(simTimer) return;
+           startLoop();
+           setGpsStatus("SIM on");
 
-      function stopGps(){
-        try{
-          if(watchId !== null){
-            navigator.geolocation.clearWatch(watchId);
-            watchId = null;
-          }
-        }catch{}
-        try{
-          if(rafId != null){
-            cancelAnimationFrame(rafId);
-            rafId = null;
-          }
-        }catch{}
-      }
-      window.addEventListener("pagehide", stopGps);
-      window.addEventListener("beforeunload", stopGps);
-    })();
+           simTimer = setInterval(() => {
+               simT += 0.15;
+               const base = 55 + 35*Math.sin(simT*0.45) + 18*Math.sin(simT*1.2);
+               const stopPulse = (Math.sin(simT*0.12) > 0.92) ? 0.18 : 1.0;
+               let v = clamp(base * stopPulse, 0, 115);
+               v = clamp(v + (Math.random()*2.2 - 1.1), 0, 115);
+               pushTargetSpeed(v);
+           }, 250);
+       }
 
-    /* ---- audio ---- */
-    (function(){
-      const HLS_URL = "https://as-hls-ww.live.cf.md.bbci.co.uk/pool_87948813/live/ww/bbc_world_service/bbc_world_service.isml/bbc_world_service-audio=96000.norewind.m3u8";
-      const MP3_URL = "https://stream.live.vc.bbcmedia.co.uk/bbc_world_service";
+       function stopSim(){
+           if(simTimer){
+               clearInterval(simTimer);
+               simTimer = null;
+           }
+       }
 
-      const audio        = document.getElementById("player");
-      const statusEl     = document.getElementById("status");
-      const playBtn      = document.getElementById("playBtn");
-      const floatPlayBtn = document.getElementById("floatPlayBtn");
-      const reloadBtn    = document.getElementById("reloadBtn");
-      const errEl        = document.getElementById("err");
+       function enableSim(on){
+           simOn = !!on;
+           if(simBtn){
+               simBtn.classList.toggle("on", simOn);
+               simBtn.textContent = simOn ? "SIM✓" : "SIM";
+           }
+           if(simOn){
+               stopGps();
+               startSim();
+           }else{
+               stopSim();
+               startGps();
+           }
+       }
 
-      const ua = navigator.userAgent || "";
-      const isAndroid = /Android/i.test(ua);
-      let hls = null;
+       if(simBtn){
+           simBtn.addEventListener("click", () => enableSim(!simOn));
+       }
 
-      function setStatus(msg, ok=false){
-        statusEl.textContent = msg;
-        statusEl.className = ok ? "ok mono" : "mono";
-      }
+       enableSim(false); // try GPS first
 
-      async function tryPlay(){
-        try{
-          await audio.play();
-          setStatus("Playing ✓", true);
-          playBtn.hidden = true;
-          floatPlayBtn.style.display = "none";
-        }catch(e){
-          setStatus("Autoplay blocked — press ▶︎");
-          playBtn.hidden = false;
-          floatPlayBtn.style.display = "flex";
-        }
-      }
+       function cleanup(){
+           stopSim();
+           stopGps();
+           try{ if(rafId != null){ cancelAnimationFrame(rafId); rafId = null; } }catch{}
+       }
+       window.addEventListener("pagehide", cleanup);
+       window.addEventListener("beforeunload", cleanup);
+   })();
 
-      function useMp3(){
-        audio.src = MP3_URL;
-        audio.load();
-        tryPlay();
-      }
+   /* ---- audio ---- */
+   (function(){
+       const HLS_URL = "https://as-hls-ww.live.cf.md.bbci.co.uk/pool_87948813/live/ww/bbc_world_service/bbc_world_service.isml/bbc_world_service-audio=96000.norewind.m3u8";
+       const MP3_URL = "https://stream.live.vc.bbcmedia.co.uk/bbc_world_service";
 
-      function cleanupHlsOnly(){
-        try{ if(hls){ hls.destroy(); hls = null; } }catch{}
-      }
+       const audio        = document.getElementById("player");
+       const statusEl     = document.getElementById("status");
+       const playBtn      = document.getElementById("playBtn");
+       const floatPlayBtn = document.getElementById("floatPlayBtn");
+       const reloadBtn    = document.getElementById("reloadBtn");
+       const errEl        = document.getElementById("err");
 
-      function useHls(){
-        if(audio.canPlayType("application/vnd.apple.mpegurl")){
-          audio.src = HLS_URL;
-          audio.addEventListener("loadedmetadata", tryPlay, { once:true });
-          audio.addEventListener("error", () => {
-            errEl.textContent = "HLS error — switching to MP3.";
-            useMp3();
-          }, { once:true });
-          return;
-        }
-        if(window.Hls && window.Hls.isSupported()){
-          hls = new Hls({
-            autoStartLoad:true,
-            maxBufferLength:10,
-            backBufferLength:10,
-            liveSyncDurationCount:3,
-            liveMaxLatencyDurationCount:10
-          });
-          hls.attachMedia(audio);
-          hls.on(Hls.Events.MEDIA_ATTACHED, () => hls.loadSource(HLS_URL));
-          hls.on(Hls.Events.MANIFEST_PARSED, () => tryPlay());
-          hls.on(Hls.Events.ERROR, (ev, data) => {
-            if(data && data.fatal){
-              errEl.textContent = "HLS fatal error — switching to MP3.";
-              cleanupHlsOnly();
-              useMp3();
-            }
-          });
-        } else {
-          useMp3();
-        }
-      }
+       const ua = navigator.userAgent || "";
+       const isAndroid = /Android/i.test(ua);
+       let hls = null;
 
-      function cleanupAll(){
-        try{ audio.pause(); }catch{}
-        try{ audio.removeAttribute("src"); audio.load(); }catch{}
-        cleanupHlsOnly();
-      }
+       function setStatus(msg, ok=false){
+           statusEl.textContent = msg;
+           statusEl.className = ok ? "ok mono" : "mono";
+       }
 
-      function start(){
-        setStatus("Loading…");
-        if(isAndroid) useMp3(); else useHls();
-      }
+       async function tryPlay(){
+           try{
+               await audio.play();
+               setStatus("Playing ✓", true);
+               playBtn.hidden = true;
+               floatPlayBtn.style.display = "none";
+           }catch(e){
+               setStatus("Autoplay blocked — press ▶︎");
+               playBtn.hidden = false;
+               floatPlayBtn.style.display = "flex";
+           }
+       }
 
-      playBtn.addEventListener("click", tryPlay);
-      floatPlayBtn.addEventListener("click", tryPlay);
+       function useMp3(){
+           audio.src = MP3_URL;
+           audio.load();
+           tryPlay();
+       }
 
-      reloadBtn.addEventListener("click", () => {
-        cleanupAll();
-        setTimeout(() => location.reload(), 0);
-      });
+       function cleanupHlsOnly(){
+           try{ if(hls){ hls.destroy(); hls = null; } }catch{}
+       }
 
-      window.addEventListener("beforeunload", cleanupAll);
-      window.addEventListener("pagehide", cleanupAll);
+       function useHls(){
+           if(audio.canPlayType("application/vnd.apple.mpegurl")){
+               audio.src = HLS_URL;
+               audio.addEventListener("loadedmetadata", tryPlay, { once:true });
+               audio.addEventListener("error", () => {
+                   errEl.textContent = "HLS error — switching to MP3.";
+                   useMp3();
+               }, { once:true });
+               return;
+           }
+           if(window.Hls && window.Hls.isSupported()){
+               hls = new Hls({
+                   autoStartLoad:true,
+                   maxBufferLength:10,
+                   backBufferLength:10,
+                   liveSyncDurationCount:3,
+                   liveMaxLatencyDurationCount:10
+               });
+               hls.attachMedia(audio);
+               hls.on(Hls.Events.MEDIA_ATTACHED, () => hls.loadSource(HLS_URL));
+               hls.on(Hls.Events.MANIFEST_PARSED, () => tryPlay());
+               hls.on(Hls.Events.ERROR, (ev, data) => {
+                   if(data && data.fatal){
+                       errEl.textContent = "HLS fatal error — switching to MP3.";
+                       cleanupHlsOnly();
+                       useMp3();
+                   }
+               });
+           } else {
+               useMp3();
+           }
+       }
 
-      start();
-    })();
+       function cleanupAll(){
+           try{ audio.pause(); }catch{}
+           try{ audio.removeAttribute("src"); audio.load(); }catch{}
+           cleanupHlsOnly();
+       }
+
+       function start(){
+           setStatus("Loading…");
+           if(isAndroid) useMp3(); else useHls();
+       }
+
+       playBtn.addEventListener("click", tryPlay);
+       floatPlayBtn.addEventListener("click", tryPlay);
+
+       reloadBtn.addEventListener("click", () => {
+           cleanupAll();
+           setTimeout(() => location.reload(), 0);
+       });
+
+       window.addEventListener("beforeunload", cleanupAll);
+       window.addEventListener("pagehide", cleanupAll);
+
+       start();
+   })();
   </script>
 </body>
 </html>
