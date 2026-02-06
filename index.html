@@ -13,20 +13,17 @@
       --border-light:#dcdfe6; --border-dark:#2a2f3a;
       --accent:#0077cc;
       --ok:#16a34a;
-      --muted: rgba(127,127,127,.75);
     }
     body{
       margin:0;
       font-family:system-ui,-apple-system,"Segoe UI",Roboto,"Noto Sans",Arial,sans-serif;
       background:var(--bg-light); color:var(--fg-light);
       transition:background .3s,color .3s;
-      /* 下部プレーヤーの高さ分だけ余白を確保（操作が被らないように） */
-      padding: 16px 16px 150px 16px;
+      padding: 16px 16px 150px 16px; /* bottom player space */
     }
     body.dark{ background:var(--bg-dark); color:var(--fg-dark); }
     .shell{ max-width:900px; margin:0 auto; }
 
-    /* Top header */
     .topbar{
       display:flex; align-items:center; justify-content:space-between;
       gap:12px; margin-bottom:14px;
@@ -42,7 +39,7 @@
     }
     .theme-toggle:hover{ background: rgba(127,127,127,.08); }
 
-    /* Speed display (big, centered) */
+    /* Speed (big, centered) */
     .speedHero{
       text-align:center;
       border-radius:18px;
@@ -69,15 +66,16 @@
       gap:10px;
       flex-wrap:wrap;
     }
+    /* ここが 1.5倍（64px → 96px） */
     .speedVal{
-      font-size:64px;
+      font-size:96px;
       font-weight:900;
       line-height:1;
       letter-spacing:0.5px;
       font-variant-numeric: tabular-nums;
     }
     .speedUnit{
-      font-size:20px;
+      font-size:24px;
       opacity:.85;
     }
     .gpsMeta{
@@ -87,7 +85,6 @@
       opacity:.75;
     }
 
-    /* Small status card */
     .statusCard{
       margin-top:12px;
       border-radius:14px;
@@ -104,7 +101,7 @@
     .ok{ color: var(--ok); font-weight:700; }
     .hint{ margin-top:8px; font-size:.92rem; opacity:.8; }
 
-    /* Bottom player bar (fixed) */
+    /* Bottom fixed player bar */
     .playerBar{
       position:fixed;
       left:0; right:0; bottom:0;
@@ -119,14 +116,8 @@
       border-top:1px solid var(--border-dark);
       background:rgba(23,26,33,.92);
     }
-    .playerInner{
-      max-width:900px;
-      margin:0 auto;
-    }
-    audio{
-      width:100%;
-      height:40px;
-    }
+    .playerInner{ max-width:900px; margin:0 auto; }
+    audio{ width:100%; height:40px; }
     .playerTopRow{
       display:flex;
       align-items:center;
@@ -134,10 +125,7 @@
       gap:10px;
       margin-bottom:8px;
     }
-    .playerTitle{
-      font-weight:700;
-      opacity:.9;
-    }
+    .playerTitle{ font-weight:700; opacity:.9; }
     .miniBtn{
       font-size:1rem;
       padding:.45rem .7rem;
@@ -175,7 +163,7 @@
     #floatPlayBtn{
       bottom:100px;
       background:#28a745;
-      display:none; /* need only when autoplay blocked */
+      display:none;
     }
     #floatPlayBtn:hover{ transform:scale(1.08); }
     body.dark #floatPlayBtn{ background:#34c759; }
@@ -188,7 +176,6 @@
       <button class="theme-toggle" id="themeToggle" title="Toggle dark/light">🌙</button>
     </div>
 
-    <!-- Big speed centered at top -->
     <div class="speedHero">
       <div class="speedLabel">Speed</div>
       <div class="speedRow">
@@ -198,16 +185,14 @@
       <div class="gpsMeta"><span id="gpsStatus">GPS: idle</span></div>
     </div>
 
-    <!-- Status / notes -->
     <div class="statusCard">
       <div class="mono"><span id="status">Loading…</span></div>
       <div class="hint">
-        GPSは許可が必要です（HTTPSで安定）。運転中の注視・操作は危険なので、設定は停車中に。
+        運転中の注視・操作は危険なので、設定は停車中に。
       </div>
     </div>
   </div>
 
-  <!-- Bottom fixed player bar -->
   <div class="playerBar">
     <div class="playerInner">
       <div class="playerTopRow">
@@ -222,11 +207,9 @@
     </div>
   </div>
 
-  <!-- Floating buttons -->
   <button id="floatPlayBtn" title="Play">▶︎</button>
   <button id="reloadBtn" title="Reload">🔄</button>
 
-  <!-- hls.js for desktop HLS -->
   <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.13/dist/hls.min.js" crossorigin="anonymous"></script>
   <script>
     /* ---- theme ---- */
@@ -241,16 +224,22 @@
     prefersDark.addEventListener("change", e => setTheme(e.matches));
     themeToggle.onclick = () => setTheme(!body.classList.contains("dark"));
 
-    /* ---- GPS speed ---- */
+    /* ---- GPS speed (smoothed) ---- */
     (function(){
-      const speedVal = document.getElementById("speedVal");
+      const speedEl = document.getElementById("speedVal");
       const gpsStatus = document.getElementById("gpsStatus");
 
       let watchId = null;
       let last = null; // {lat, lon, t}
 
-      function setGpsStatus(msg){ gpsStatus.textContent = "GPS: " + msg; }
+      // smoothing state
+      let targetKmh = null;      // latest measured speed
+      let filteredKmh = null;    // EMA filtered target
+      let displayKmh = null;     // what we animate toward
+      let lastUiUpdate = 0;      // throttle text updates
+      let rafId = null;
 
+      function setGpsStatus(msg){ gpsStatus.textContent = "GPS: " + msg; }
       function toRad(x){ return x * Math.PI / 180; }
       function haversineMeters(a, b){
         const R = 6371000;
@@ -261,6 +250,37 @@
         return 2 * R * Math.asin(Math.sqrt(s));
       }
 
+      function formatKmh(v){
+        if(v == null || !isFinite(v)) return "--";
+        if(v < 10) return v.toFixed(1);
+        return v.toFixed(0);
+      }
+
+      // UI animation loop: displayKmh -> filteredKmh smoothly
+      function tick(ts){
+        if(filteredKmh == null){
+          // show placeholder if never got speed
+          rafId = requestAnimationFrame(tick);
+          return;
+        }
+        if(displayKmh == null) displayKmh = filteredKmh;
+
+        // "追従の速さ"：0.08〜0.15くらいが車だと自然（大きいほど追従が速い）
+        const follow = 0.12;
+        displayKmh = displayKmh + (filteredKmh - displayKmh) * follow;
+
+        // 文字更新は 10Hz 程度に抑える（無駄なDOM更新を減らす）
+        if(ts - lastUiUpdate > 100){
+          speedEl.textContent = formatKmh(Math.max(0, displayKmh));
+          lastUiUpdate = ts;
+        }
+        rafId = requestAnimationFrame(tick);
+      }
+
+      function startLoop(){
+        if(rafId == null) rafId = requestAnimationFrame(tick);
+      }
+
       function startGps(){
         if(!("geolocation" in navigator)){
           setGpsStatus("not supported");
@@ -269,6 +289,8 @@
         if(watchId !== null) return;
 
         setGpsStatus("requesting…");
+        startLoop();
+
         watchId = navigator.geolocation.watchPosition(
           (pos) => {
             const c = pos.coords;
@@ -277,8 +299,9 @@
 
             let speed_mps = null;
 
+            // Prefer native speed when available
             if(typeof c.speed === "number" && isFinite(c.speed)){
-              speed_mps = c.speed; // m/s
+              speed_mps = c.speed;
             } else if(last) {
               const dt = (now.t - last.t) / 1000;
               if(dt > 0.5){
@@ -288,20 +311,24 @@
             }
             last = now;
 
-            if(speed_mps === null){
-              speedVal.textContent = "--";
+            if(speed_mps == null){
               setGpsStatus("fix ✓");
               return;
             }
 
-            const kmh = Math.max(0, speed_mps * 3.6);
-            speedVal.textContent = (kmh < 10 ? kmh.toFixed(1) : kmh.toFixed(0));
+            targetKmh = Math.max(0, speed_mps * 3.6);
+
+            // EMA on the measured speed to reduce jitter
+            // alpha: 0.25〜0.4くらいが実用的（大きいほど反応速い）
+            const alpha = 0.30;
+            if(filteredKmh == null) filteredKmh = targetKmh;
+            else filteredKmh = filteredKmh + (targetKmh - filteredKmh) * alpha;
 
             const acc = (typeof c.accuracy === "number") ? (" ±" + Math.round(c.accuracy) + "m") : "";
             setGpsStatus("fix ✓" + acc);
           },
           (err) => {
-            speedVal.textContent = "--";
+            speedEl.textContent = "--";
             if(err && err.code === 1) setGpsStatus("denied");
             else if(err && err.code === 2) setGpsStatus("unavailable");
             else if(err && err.code === 3) setGpsStatus("timeout");
@@ -315,15 +342,19 @@
         );
       }
 
-      // start immediately (prompts permission)
       startGps();
 
-      // stop watch on exit
       function stopGps(){
         try{
           if(watchId !== null){
             navigator.geolocation.clearWatch(watchId);
             watchId = null;
+          }
+        }catch{}
+        try{
+          if(rafId != null){
+            cancelAnimationFrame(rafId);
+            rafId = null;
           }
         }catch{}
       }
@@ -345,7 +376,6 @@
 
       const ua = navigator.userAgent || "";
       const isAndroid = /Android/i.test(ua);
-
       let hls = null;
 
       function setStatus(msg, ok=false){
