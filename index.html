@@ -226,6 +226,43 @@
 
     /* ---- GPS speed (smoothed) ---- */
     (function(){
+
+// ===== SIMULATION MODE =====
+const SIM_MODE = new URLSearchParams(location.search).has("sim");
+// 例: https://.../index.html?sim で疑似モード
+
+function feedSpeedKmh(measuredKmh, accuracyMeters = null){
+  // targetKmh/filteredKmh は下で宣言されている変数を使う前提
+  targetKmh = Math.max(0, measuredKmh);
+
+  // EMA（既存の alpha を流用してOK）
+  const alpha = 0.30;
+  if(filteredKmh == null) filteredKmh = targetKmh;
+  else filteredKmh = filteredKmh + (targetKmh - filteredKmh) * alpha;
+
+  const acc = (accuracyMeters != null) ? (" ±" + Math.round(accuracyMeters) + "m") : "";
+  setGpsStatus("sim ✓" + acc);
+  startLoop();
+}
+
+function startSim(){
+  setGpsStatus("sim (pattern)");
+  // 0→60→30→80→0 のようなパターンを繰り返す（揺れも少し入れる）
+  let t0 = performance.now();
+  setInterval(() => {
+    const t = (performance.now() - t0) / 1000;
+
+    // パターン：ゆっくり加速/減速 + 少しノイズ
+    const base =
+      40 + 25*Math.sin(t*0.35) + 18*Math.sin(t*0.9 + 0.4); // だいたい 0〜80
+    const noise = 2.0*Math.sin(t*6.0); // 揺れ（GPSっぽさ）
+    const kmh = Math.max(0, base + noise);
+
+    feedSpeedKmh(kmh, 8 + 10*Math.abs(Math.sin(t*0.2)));
+  }, 250); // “GPS更新”っぽい周期
+}
+// ===== END SIMULATION MODE =====
+      
       const speedEl = document.getElementById("speedVal");
       const gpsStatus = document.getElementById("gpsStatus");
 
@@ -342,7 +379,8 @@
         );
       }
 
-      startGps();
+if (SIM_MODE) startSim();
+else startGps();
 
       function stopGps(){
         try{
