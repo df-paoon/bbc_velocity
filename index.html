@@ -45,7 +45,7 @@
       box-shadow: 0 0 0 2px rgba(22,163,74,.25) inset;
     }
 
-    /* Speed card */
+    /* Card */
     .speedHero{
       text-align:center;
       border-radius:18px;
@@ -66,7 +66,7 @@
       margin-bottom:6px;
     }
 
-    /* ===== Speed display (NUMBER truly centered, unit never overlaps) ===== */
+    /* ===== Centered number + unit (unit never overlaps) ===== */
     .speedRow{
       display: grid;
       grid-template-columns: 1fr auto 1fr; /* left spacer / number / unit */
@@ -97,6 +97,18 @@
       text-shadow: 0 0 18px var(--spd-glow, transparent);
       transition: color .25s linear, text-shadow .25s linear;
     }
+    /* GPS accuracy big number */
+    #accVal{
+      justify-self: center;
+
+      font-size:48px;
+      font-weight:900;
+      line-height:1;
+      letter-spacing:0.2px;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+
     .speedUnit{
       justify-self: start;
 
@@ -214,6 +226,7 @@
       </div>
     </div>
 
+    <!-- Speed -->
     <div class="speedHero">
       <div class="speedLabel">Speed</div>
       <div class="speedRow" aria-label="Speed">
@@ -222,6 +235,17 @@
         <span class="speedUnit">km/h</span>
       </div>
       <div class="gpsMeta"><span id="gpsStatus">GPS: idle</span></div>
+    </div>
+
+    <!-- GPS Accuracy (recommended) -->
+    <div class="speedHero" style="margin-top:12px;">
+      <div class="speedLabel">GPS Accuracy</div>
+      <div class="speedRow" aria-label="GPS accuracy">
+        <span class="speedUnitGhost" aria-hidden="true">m</span>
+        <span id="accVal">--</span>
+        <span class="speedUnit">m</span>
+      </div>
+      <div class="gpsMeta"><span id="accStatus">ACC: idle</span></div>
     </div>
 
     <div class="statusCard">
@@ -263,33 +287,54 @@
    prefersDark.addEventListener("change", e => setTheme(e.matches));
    themeToggle.onclick = () => setTheme(!body.classList.contains("dark"));
 
-   /* ---- GPS speed (smoothed) + color + simulation ---- */
+   /* ---- GPS speed (fast follow) + color + simulation + accuracy ---- */
    (function(){
        const speedEl   = document.getElementById("speedVal");
        const gpsStatus = document.getElementById("gpsStatus");
        const simBtn    = document.getElementById("simToggle");
 
+       const accValEl    = document.getElementById("accVal");
+       const accStatusEl = document.getElementById("accStatus");
+
        let watchId = null;
        let last = null; // {lat, lon, t}
 
-       // smoothing
-       let filteredKmh = null;
-       let displayKmh  = null;
+       // ===== follower (time-constant) =====
+       let targetKmh = null;       // 最新の目標値（GPS/推定/SIMが入れる）
+       let displayKmh = null;      // 表示用
        let lastUiUpdate = 0;
        let rafId = null;
 
-       // sim
+       let lastTickTs = null;
+       let lastSampleTs = null;
+
+       // ★ 追従の速さ（秒）
+       // 0.10: 0.1秒で約63%追従 / さらに速くしたいなら 0.06 くらいまで
+       const TAU_DISPLAY = 0.10;
+
+       // 入力側の微小平滑化（ノイズが気にならなければ 0 でもOK）
+       const TAU_INPUT = 0.05;
+
+       // ===== SIM =====
        let simOn = false;
        let simTimer = null;
        let simT = 0;
 
        function setGpsStatus(msg){ gpsStatus.textContent = "GPS: " + msg; }
+       function setAccStatus(msg){ accStatusEl.textContent = "ACC: " + msg; }
+
        function clamp(x,a,b){ return Math.min(b, Math.max(a,x)); }
 
        function formatKmh(v){
            if(v == null || !isFinite(v)) return "--";
            if(v < 10) return v.toFixed(1);
            return v.toFixed(0);
+       }
+
+       function formatMeters(m){
+           if(m == null || !isFinite(m)) return "--";
+           if(m < 10) return m.toFixed(1);
+           return String(Math.round(m));
        }
 
        function updateSpeedColor(vKmh){
@@ -313,23 +358,39 @@
            document.body.style.setProperty("--spd-glow", glow);
        }
 
-       function pushTargetSpeed(targetKmh){
-           const alpha = 0.30;
-           if(filteredKmh == null) filteredKmh = targetKmh;
-           else filteredKmh = filteredKmh + (targetKmh - filteredKmh) * alpha;
+       function expFollow(current, target, dt, tau){
+           if(current == null) return target;
+           if(tau <= 0) return target;
+           const k = 1 - Math.exp(-dt / tau);
+           return current + (target - current) * k;
+       }
+
+       function pushTargetSpeed(sampleKmh){
+           const now = performance.now();
+           const dt = (lastSampleTs == null) ? 0 : (now - lastSampleTs) / 1000;
+           lastSampleTs = now;
+
+           if(targetKmh == null) targetKmh = sampleKmh;
+           else targetKmh = expFollow(targetKmh, sampleKmh, Math.max(0, dt), TAU_INPUT);
+       }
+
+       function setAccuracyMeters(m){
+           accValEl.textContent = formatMeters(m);
        }
 
        function tick(ts){
-           if(filteredKmh == null){
+           if(targetKmh == null){
                rafId = requestAnimationFrame(tick);
                return;
            }
-           if(displayKmh == null) displayKmh = filteredKmh;
+           if(lastTickTs == null) lastTickTs = ts;
+           const dt = Math.min(0.25, Math.max(0, (ts - lastTickTs) / 1000));
+           lastTickTs = ts;
 
-           const follow = 0.12;
-           displayKmh = displayKmh + (filteredKmh - displayKmh) * follow;
+           displayKmh = expFollow(displayKmh, targetKmh, dt, TAU_DISPLAY);
 
-           if(ts - lastUiUpdate > 100){
+           // UI更新（50msごと）
+           if(ts - lastUiUpdate > 50){
                const shown = Math.max(0, displayKmh);
                speedEl.textContent = formatKmh(shown);
                updateSpeedColor(shown);
@@ -337,6 +398,7 @@
            }
            rafId = requestAnimationFrame(tick);
        }
+
        function startLoop(){
            if(rafId == null) rafId = requestAnimationFrame(tick);
        }
@@ -354,12 +416,14 @@
        function startGps(){
            if(!("geolocation" in navigator)){
                setGpsStatus("not supported → SIM");
+               setAccStatus("not supported → SIM");
                enableSim(true);
                return;
            }
            if(watchId !== null) return;
 
            setGpsStatus("requesting…");
+           setAccStatus("requesting…");
            startLoop();
 
            watchId = navigator.geolocation.watchPosition(
@@ -368,41 +432,61 @@
                    const t = pos.timestamp;
                    const now = { lat: c.latitude, lon: c.longitude, t };
 
+                   // accuracy
+                   if(typeof c.accuracy === "number" && isFinite(c.accuracy)){
+                       setAccuracyMeters(c.accuracy);
+                   }else{
+                       setAccuracyMeters(null);
+                   }
+
                    let speed_mps = null;
 
                    if(typeof c.speed === "number" && isFinite(c.speed)){
                        speed_mps = c.speed;
                    } else if(last) {
                        const dt = (now.t - last.t) / 1000;
-                       if(dt > 0.5){
+                       if(dt > 0.15){
                            const d = haversineMeters(last, now);
                            speed_mps = d / dt;
                        }
                    }
                    last = now;
 
-                   if(speed_mps == null){
-                       setGpsStatus("fix ✓");
-                       return;
+                   if(speed_mps != null){
+                       pushTargetSpeed(Math.max(0, speed_mps * 3.6));
                    }
 
-                   pushTargetSpeed(Math.max(0, speed_mps * 3.6));
+                   const accTxt = (typeof c.accuracy === "number" && isFinite(c.accuracy))
+                     ? (" ±" + Math.round(c.accuracy) + "m")
+                     : "";
 
-                   const acc = (typeof c.accuracy === "number") ? (" ±" + Math.round(c.accuracy) + "m") : "";
-                   setGpsStatus("fix ✓" + acc);
+                   setGpsStatus("fix ✓" + accTxt);
+                   setAccStatus("fix ✓");
                },
                (err) => {
                    speedEl.textContent = "--";
                    updateSpeedColor(null);
 
-                   if(err && err.code === 1) setGpsStatus("denied → SIM");
-                   else if(err && err.code === 2) setGpsStatus("unavailable → SIM");
-                   else if(err && err.code === 3) setGpsStatus("timeout → SIM");
-                   else setGpsStatus("error → SIM");
+                   setAccuracyMeters(null);
+
+                   if(err && err.code === 1){
+                       setGpsStatus("denied → SIM");
+                       setAccStatus("denied → SIM");
+                   } else if(err && err.code === 2){
+                       setGpsStatus("unavailable → SIM");
+                       setAccStatus("unavailable → SIM");
+                   } else if(err && err.code === 3){
+                       setGpsStatus("timeout → SIM");
+                       setAccStatus("timeout → SIM");
+                   } else {
+                       setGpsStatus("error → SIM");
+                       setAccStatus("error → SIM");
+                   }
 
                    enableSim(true);
                },
-               { enableHighAccuracy: true, maximumAge: 1000, timeout: 10000 }
+               // 重要：古い値を混ぜない（遅れの大きな原因）
+               { enableHighAccuracy: true, maximumAge: 0, timeout: 10000 }
            );
        }
 
@@ -415,6 +499,8 @@
            if(simTimer) return;
            startLoop();
            setGpsStatus("SIM on");
+           setAccStatus("SIM on");
+           setAccuracyMeters(null);
 
            simTimer = setInterval(() => {
                simT += 0.15;
@@ -567,3 +653,4 @@
   </script>
 </body>
 </html>
+
