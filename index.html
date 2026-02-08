@@ -66,10 +66,10 @@
       margin-bottom:6px;
     }
 
-    /* ===== Centered value + unit (unit never overlaps) ===== */
+    /* ===== Centered number + unit (unit never overlaps) ===== */
     .speedRow{
       display: grid;
-      grid-template-columns: 1fr auto 1fr; /* left spacer / value / right spacer(or unit) */
+      grid-template-columns: 1fr auto 1fr; /* left spacer / number / unit */
       align-items: baseline;
       column-gap: 12px;
 
@@ -100,7 +100,7 @@
       transition: color .25s linear, text-shadow .25s linear;
     }
 
-    /* Course big text (N/NW/...) */
+    /* Course big number */
     #headVal{
       justify-self: center;
 
@@ -137,6 +137,41 @@
       font-family: ui-monospace, Menlo, Consolas, monospace;
       font-size:13px;
       opacity:.75;
+    }
+
+    /* ===== Location line (bigger) ===== */
+    .locRow{
+      margin-top:10px;
+      display:flex;
+      align-items:baseline;
+      justify-content:center;
+      flex-wrap:wrap;
+      gap:10px;
+    }
+    #locName{
+      font-size:30px;      /* ~2x-ish */
+      font-weight:900;
+      line-height:1.08;
+      letter-spacing:0.2px;
+    }
+    #locDir{
+      font-size:22px;
+      font-weight:800;
+      opacity:.92;
+      white-space:nowrap;
+
+      background: rgba(0,0,0,.08);
+      padding: 0 .35em;
+      border-radius: .45em;
+    }
+    body.dark #locDir{
+      background: rgba(255,255,255,.10);
+    }
+    .locDetail{
+      margin-top:8px;
+      font-family: ui-monospace, Menlo, Consolas, monospace;
+      font-size:14px;
+      opacity:.78;
     }
 
     .statusCard{
@@ -245,18 +280,28 @@
       <div class="gpsMeta"><span id="gpsStatus">GPS: idle</span></div>
     </div>
 
-    <!-- GPS Course (letters: N/NW/...) -->
+    <!-- GPS Course (from GPS heading/bearing) -->
     <div class="speedHero" style="margin-top:12px;">
       <div class="speedLabel">GPS Course</div>
-      <div class="speedRow" aria-label="GPS course">
-        <span class="speedUnitGhost" aria-hidden="true">DIR</span>
+
+      <!-- NEW: location + direction -->
+      <div class="locRow" aria-label="Location and direction">
+        <span id="locName">--</span>
+        <span id="locComma" aria-hidden="true">,</span>
+        <span id="locDir">--</span>
+      </div>
+      <div class="locDetail"><span id="locDetail">--</span></div>
+
+      <div class="speedRow" aria-label="GPS course" style="margin-top:10px;">
+        <span class="speedUnitGhost" aria-hidden="true">°</span>
         <span id="headVal">--</span>
-        <span aria-hidden="true"></span>
+        <span class="speedUnit">°</span>
       </div>
       <div class="gpsMeta">
         <span id="headStatus">COURSE: idle</span>
         <span style="margin-left:10px;">
           <span id="headArrow" aria-hidden="true" style="display:inline-block;">▲</span>
+          <span id="headCard">--</span>
         </span>
       </div>
     </div>
@@ -286,7 +331,9 @@
   <button id="floatPlayBtn" title="Play">▶︎</button>
   <button id="reloadBtn" title="Reload">🔄</button>
 
-  <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.13/dist/hls.min.js" crossorigin="anonymous"></script>
+  <!-- ★ CDNではなく、assetsに同梱した hls.min.js を読む -->
+  <script src="hls.min.js"></script>
+
   <script>
    /* ---- theme ---- */
    const body = document.body;
@@ -300,7 +347,7 @@
    prefersDark.addEventListener("change", e => setTheme(e.matches));
    themeToggle.onclick = () => setTheme(!body.classList.contains("dark"));
 
-   /* ---- GPS speed (fast follow) + color + simulation + course ---- */
+   /* ---- GPS speed (fast follow) + color + simulation + course + location ---- */
    (function(){
        const speedEl   = document.getElementById("speedVal");
        const gpsStatus = document.getElementById("gpsStatus");
@@ -309,21 +356,30 @@
        const headValEl    = document.getElementById("headVal");
        const headStatusEl = document.getElementById("headStatus");
        const headArrowEl  = document.getElementById("headArrow");
+       const headCardEl   = document.getElementById("headCard");
+
+       const locNameEl   = document.getElementById("locName");
+       const locDirEl    = document.getElementById("locDir");
+       const locDetailEl = document.getElementById("locDetail");
+       const locCommaEl  = document.getElementById("locComma");
 
        let watchId = null;
        let last = null; // {lat, lon, t}
 
        // ===== follower (time-constant) =====
-       let targetKmh = null;
-       let displayKmh = null;
+       let targetKmh = null;       // 最新の目標値（GPS/推定/SIMが入れる）
+       let displayKmh = null;      // 表示用
        let lastUiUpdate = 0;
        let rafId = null;
 
        let lastTickTs = null;
        let lastSampleTs = null;
 
-       const TAU_DISPLAY = 0.10; // display follow (sec)
-       const TAU_INPUT = 0.05;   // input smoothing (sec)
+       // ★ 追従の速さ（秒）
+       const TAU_DISPLAY = 0.10;
+
+       // 入力側の微小平滑化
+       const TAU_INPUT = 0.05;
 
        // ===== SIM =====
        let simOn = false;
@@ -331,11 +387,21 @@
        let simT = 0;
        let simHeading = 0;
 
+       // ===== reverse geocoding (Nominatim) =====
+       const NOMINATIM_REVERSE = "https://nominatim.openstreetmap.org/reverse";
+       const REVERSE_ZOOM = 17;           // streets level
+       const REV_MIN_MOVE_M = 300;        // update only after moving
+       const REV_MIN_INTERVAL_MS = 15000; // throttle
+       const REV_MAX_STALE_MS = 180000;   // refresh even if not moved much
+
+       let revLast = null;         // {lat, lon, ts}
+       let revInFlight = false;
+       const placeCache = new Map(); // key -> {primary, detail}
+
        function setGpsStatus(msg){ gpsStatus.textContent = "GPS: " + msg; }
        function setHeadStatus(msg){ headStatusEl.textContent = "COURSE: " + msg; }
 
        function clamp(x,a,b){ return Math.min(b, Math.max(a,x)); }
-       function wrap360(d){ d = d % 360; if(d < 0) d += 360; return d; }
 
        function formatKmh(v){
            if(v == null || !isFinite(v)) return "--";
@@ -343,11 +409,21 @@
            return v.toFixed(0);
        }
 
-       // 8-point compass (N, NE, E, SE, S, SW, W, NW)
-       function compass8(deg){
+       function wrap360(d){
+         d = d % 360;
+         if(d < 0) d += 360;
+         return d;
+       }
+
+       function formatDeg(d){
+         if(d == null || !isFinite(d)) return "--";
+         return String(Math.round(wrap360(d)));
+       }
+
+       function compass16(deg){
          if(deg == null || !isFinite(deg)) return "--";
-         const dirs = ["N","NE","E","SE","S","SW","W","NW"];
-         const i = Math.round(wrap360(deg) / 45) % 8;
+         const dirs = ["N","NNE","NE","ENE","E","ESE","SE","SSE","S","SSW","SW","WSW","W","WNW","NW","NNW"];
+         const i = Math.round(wrap360(deg) / 22.5) % 16;
          return dirs[i];
        }
 
@@ -361,15 +437,27 @@
          return wrap360(toDeg(Math.atan2(y, x)));
        }
 
+       function setLocation(primary, detail){
+         const p = (primary && String(primary).trim()) ? String(primary).trim() : "--";
+         const d = (detail && String(detail).trim()) ? String(detail).trim() : "--";
+         locNameEl.textContent = p;
+         locDetailEl.textContent = d;
+         locCommaEl.style.display = (p === "--") ? "none" : "inline";
+       }
+
        function setCourse(deg){
          if(deg == null || !isFinite(deg)){
            headValEl.textContent = "--";
+           headCardEl.textContent = "--";
            headArrowEl.style.transform = "rotate(0deg)";
+           locDirEl.textContent = "--";
            return;
          }
          const d = wrap360(deg);
-         headValEl.textContent = compass8(d);
+         headValEl.textContent = formatDeg(d);
+         headCardEl.textContent = compass16(d);
          headArrowEl.style.transform = `rotate(${d}deg)`;
+         locDirEl.textContent = compass16(d);
        }
 
        function updateSpeedColor(vKmh){
@@ -420,6 +508,7 @@
 
            displayKmh = expFollow(displayKmh, targetKmh, dt, TAU_DISPLAY);
 
+           // UI更新（50msごと）
            if(ts - lastUiUpdate > 50){
                const shown = Math.max(0, displayKmh);
                speedEl.textContent = formatKmh(shown);
@@ -443,10 +532,110 @@
            return 2 * R * Math.asin(Math.sqrt(s));
        }
 
+       function pick(){
+         for(let i=0;i<arguments.length;i++){
+           const v = arguments[i];
+           if(v != null && String(v).trim() !== "") return String(v);
+         }
+         return null;
+       }
+
+       function cacheKey(lat, lon){
+         // ~100m grid
+         const r = (x) => Math.round(x * 1000) / 1000;
+         return r(lat) + "," + r(lon);
+       }
+
+       function parseNominatim(js){
+         const a = (js && js.address) ? js.address : {};
+         const pref  = pick(a.state, a.region);
+         const city  = pick(a.city, a.town, a.village, a.municipality, a.county);
+         const ward  = pick(a.city_district, a.suburb, a.borough, a.district);
+         const neigh = pick(a.neighbourhood, a.quarter, a.hamlet);
+         const road  = pick(a.road, a.pedestrian, a.cycleway, a.footway, a.path, a.highway);
+         const house = pick(a.house_number);
+
+         // Big line: city + (ward/neigh)
+         let primary = [city, ward, neigh].filter(Boolean).join(" ");
+         if(!primary) primary = pick(js.name, js.display_name);
+         if(primary && primary.indexOf(",") >= 0) primary = primary.split(",")[0].trim();
+         if(!primary) primary = "--";
+
+         // Detail: road + house / prefecture
+         let detailParts = [];
+         if(road) detailParts.push(road + (house ? (" " + house) : ""));
+         if(pref) detailParts.push(pref);
+
+         if(!detailParts.length && js && js.display_name){
+           const parts = String(js.display_name).split(",").map(s => s.trim()).filter(Boolean);
+           detailParts = parts.slice(0, 3);
+         }
+
+         const detail = detailParts.length ? detailParts.join(" / ") : "--";
+         return { primary, detail };
+       }
+
+       async function reverseGeocode(lat, lon){
+         const key = cacheKey(lat, lon);
+         const cached = placeCache.get(key);
+         if(cached) return cached;
+
+         const url =
+           NOMINATIM_REVERSE +
+           `?format=jsonv2&lat=${encodeURIComponent(lat)}` +
+           `&lon=${encodeURIComponent(lon)}` +
+           `&zoom=${REVERSE_ZOOM}&addressdetails=1&accept-language=ja`;
+
+         const resp = await fetch(url, { headers: { "Accept": "application/json" } });
+         if(!resp.ok) throw new Error("HTTP " + resp.status);
+
+         const js = await resp.json();
+         const parsed = parseNominatim(js);
+
+         placeCache.set(key, parsed);
+         if(placeCache.size > 80){
+           const first = placeCache.keys().next().value;
+           placeCache.delete(first);
+         }
+         return parsed;
+       }
+
+       function shouldReverse(nowLatLon){
+         const nowTs = performance.now();
+         if(revInFlight) return false;
+         if(!revLast) return true;
+
+         const dt = nowTs - revLast.ts;
+         const moved = haversineMeters({lat: revLast.lat, lon: revLast.lon}, nowLatLon);
+
+         if(dt >= REV_MAX_STALE_MS) return true;
+         if(moved >= REV_MIN_MOVE_M && dt >= REV_MIN_INTERVAL_MS) return true;
+         return false;
+       }
+
+       function maybeUpdatePlace(nowLatLon){
+         if(!shouldReverse(nowLatLon)) return;
+
+         revInFlight = true;
+         const nowTs = performance.now();
+
+         reverseGeocode(nowLatLon.lat, nowLatLon.lon)
+           .then(({primary, detail}) => {
+             setLocation(primary, detail);
+             revLast = { lat: nowLatLon.lat, lon: nowLatLon.lon, ts: nowTs };
+           })
+           .catch(() => {
+             // ネットワーク/CORS/混雑などで失敗しうる
+             if(locDetailEl.textContent === "--") locDetailEl.textContent = "loc unavailable";
+           })
+           .finally(() => { revInFlight = false; });
+       }
+
        function startGps(){
            if(!("geolocation" in navigator)){
                setGpsStatus("not supported → SIM");
                setHeadStatus("not supported → SIM");
+               setLocation("SIM", "--");
                enableSim(true);
                return;
            }
@@ -454,6 +643,7 @@
 
            setGpsStatus("requesting…");
            setHeadStatus("requesting…");
+           setLocation("loc…", "--");
            startLoop();
 
            watchId = navigator.geolocation.watchPosition(
@@ -485,6 +675,7 @@
                    } else if(prev) {
                      if(dt == null) dt = (now.t - prev.t) / 1000;
                      if(dist == null && dt > 0.15) dist = haversineMeters(prev, now);
+
                      if(dt > 0.15 && dist != null && dist > 3){
                        courseDeg = bearingDeg(prev, now);
                      }
@@ -508,11 +699,15 @@
                        pushTargetSpeed(Math.max(0, speed_mps * 3.6));
                    }
 
+                   // NEW: reverse geocode (throttled)
+                   maybeUpdatePlace({ lat: now.lat, lon: now.lon });
+
                    setGpsStatus("fix ✓");
                },
                (err) => {
                    speedEl.textContent = "--";
                    updateSpeedColor(null);
+
                    setCourse(null);
 
                    if(err && err.code === 1){
@@ -529,6 +724,7 @@
                        setHeadStatus("error → SIM");
                    }
 
+                   setLocation("SIM", "--");
                    enableSim(true);
                },
                { enableHighAccuracy: true, maximumAge: 0, timeout: 10000 }
@@ -538,6 +734,8 @@
        function stopGps(){
            try{ if(watchId !== null){ navigator.geolocation.clearWatch(watchId); watchId = null; } }catch{}
            last = null;
+           revLast = null;
+           revInFlight = false;
        }
 
        function startSim(){
@@ -545,7 +743,7 @@
            startLoop();
            setGpsStatus("SIM on");
            setHeadStatus("SIM on");
-           setCourse(null);
+           setLocation("SIM", "--");
 
            simTimer = setInterval(() => {
                simT += 0.15;
@@ -586,7 +784,7 @@
            simBtn.addEventListener("click", () => enableSim(!simOn));
        }
 
-       enableSim(false);
+       enableSim(false); // try GPS first
 
        function cleanup(){
            stopSim();
