@@ -40,11 +40,8 @@
       cursor:pointer;
     }
     .theme-toggle:hover{ background: rgba(127,127,127,.08); }
-    #simToggle.on{
-      border-color: rgba(22,163,74,.75);
-      box-shadow: 0 0 0 2px rgba(22,163,74,.25) inset;
-    }
 
+    /* Card */
     .speedHero{
       text-align:center;
       border-radius:18px;
@@ -65,24 +62,28 @@
       margin-bottom:6px;
     }
 
+    /* ===== Centered number + unit (unit never overlaps) ===== */
     .speedRow{
       display: grid;
       grid-template-columns: 1fr auto 1fr; /* left spacer / number / unit */
       align-items: baseline;
       column-gap: 12px;
+
       direction: ltr;
       unicode-bidi: isolate;
     }
     .speedUnitGhost{
       justify-self: end;
-      visibility: hidden;
+      visibility: hidden;   /* takes space, not visible */
       white-space: nowrap;
       font-size: 24px;
       padding: 0 .25em;
     }
 
+    /* Speed big number */
     #speedVal{
       justify-self: center;
+
       font-size:96px;
       font-weight:900;
       line-height:1;
@@ -97,9 +98,11 @@
 
     .speedUnit{
       justify-self: start;
+
       font-size:24px;
       opacity:.85;
       white-space:nowrap;
+
       background: rgba(0,0,0,.08);
       padding: 0 .25em;
       border-radius: .4em;
@@ -115,6 +118,7 @@
       opacity:.75;
     }
 
+    /* ===== Location line (bigger) ===== */
     .locRow{
       margin-top:10px;
       display:flex;
@@ -124,7 +128,7 @@
       gap:10px;
     }
     #locName{
-      font-size:30px;
+      font-size:30px;      /* ~2x-ish */
       font-weight:900;
       line-height:1.08;
       letter-spacing:0.2px;
@@ -134,13 +138,23 @@
       font-weight:800;
       opacity:.92;
       white-space:nowrap;
+
       background: rgba(0,0,0,.08);
       padding: 0 .35em;
       border-radius: .45em;
+      display:inline-flex;
+      align-items:baseline;
+      gap:6px;
     }
     body.dark #locDir{
       background: rgba(255,255,255,.10);
     }
+    #headArrow{
+      display:inline-block;
+      transform-origin: 50% 60%;
+      line-height:1;
+    }
+
     .locDetail{
       margin-top:8px;
       font-family: ui-monospace, Menlo, Consolas, monospace;
@@ -164,6 +178,7 @@
     .ok{ color: var(--ok); font-weight:700; }
     .hint{ margin-top:8px; font-size:.92rem; opacity:.8; }
 
+    /* Bottom fixed player bar */
     .playerBar{
       position:fixed;
       left:0; right:0; bottom:0;
@@ -200,6 +215,7 @@
     }
     .miniBtn:hover{ background: rgba(127,127,127,.08); }
 
+    /* Floating play/reload buttons */
     #reloadBtn, #floatPlayBtn{
       position:fixed;
       right:16px;
@@ -228,12 +244,6 @@
     }
     #floatPlayBtn:hover{ transform:scale(1.08); }
     body.dark #floatPlayBtn{ background:#34c759; }
-
-    #headArrow{
-      display:inline-block;
-      transform-origin: 50% 60%;
-      margin-right:6px;
-    }
   </style>
 </head>
 
@@ -242,11 +252,11 @@
     <div class="topbar">
       <div class="mono" style="opacity:.75;">BBC World Service + Speed</div>
       <div style="display:flex; gap:10px;">
-        <button class="theme-toggle" id="simToggle" title="Toggle speed simulation">SIM</button>
         <button class="theme-toggle" id="themeToggle" title="Toggle dark/light">🌙</button>
       </div>
     </div>
 
+    <!-- Speed -->
     <div class="speedHero">
       <div class="speedLabel">Speed</div>
       <div class="speedRow" aria-label="Speed">
@@ -257,23 +267,16 @@
       <div class="gpsMeta"><span id="gpsStatus">GPS: idle</span></div>
     </div>
 
+    <!-- Location + Direction -->
     <div class="speedHero" style="margin-top:12px;">
-      <div class="speedLabel">GPS Course</div>
+      <div class="speedLabel">Location / Direction</div>
 
       <div class="locRow" aria-label="Location and direction">
         <span id="locName">--</span>
         <span id="locComma" aria-hidden="true">,</span>
-        <span id="locDir">--</span>
+        <span id="locDir"><span id="headArrow" aria-hidden="true">▲</span><span id="locDirText">--</span></span>
       </div>
       <div class="locDetail"><span id="locDetail">--</span></div>
-
-      <!-- Angle display removed: show only arrow + N/NW... -->
-      <div class="gpsMeta" style="margin-top:10px;">
-        <span style="margin-left:10px;">
-          <span id="headArrow" aria-hidden="true" style="display:inline-block;">▲</span>
-          <span id="headCard">--</span>
-        </span>
-      </div>
     </div>
 
     <div class="statusCard">
@@ -301,6 +304,7 @@
   <button id="floatPlayBtn" title="Play">▶︎</button>
   <button id="reloadBtn" title="Reload">🔄</button>
 
+  <!-- ★ CDNではなく、assetsに同梱した hls.min.js を読む -->
   <script src="hls.min.js"></script>
 
   <script>
@@ -316,51 +320,39 @@
    prefersDark.addEventListener("change", e => setTheme(e.matches));
    themeToggle.onclick = () => setTheme(!body.classList.contains("dark"));
 
-   /* ---- GPS speed + course (cardinal only) + location (road-first) ---- */
+   /* ---- GPS speed (fast follow) + color + course + location ---- */
    (function(){
        const speedEl   = document.getElementById("speedVal");
        const gpsStatus = document.getElementById("gpsStatus");
-       const simBtn    = document.getElementById("simToggle");
-
-       const headArrowEl  = document.getElementById("headArrow");
-       const headCardEl   = document.getElementById("headCard");
 
        const locNameEl   = document.getElementById("locName");
-       const locDirEl    = document.getElementById("locDir");
+       const locDirTextEl= document.getElementById("locDirText");
        const locDetailEl = document.getElementById("locDetail");
        const locCommaEl  = document.getElementById("locComma");
+       const headArrowEl = document.getElementById("headArrow");
 
        let watchId = null;
        let last = null; // {lat, lon, t}
 
-       // follower
-       let targetKmh = null;
-       let displayKmh = null;
+       // ===== follower (time-constant) =====
+       let targetKmh = null;       // 最新の目標値（GPS/推定が入れる）
+       let displayKmh = null;      // 表示用
        let lastUiUpdate = 0;
        let rafId = null;
 
        let lastTickTs = null;
        let lastSampleTs = null;
 
+       // 追従の速さ（秒）
        const TAU_DISPLAY = 0.10;
-       const TAU_INPUT = 0.05;
+       const TAU_INPUT   = 0.05;
 
-       // 5 km/h未満は表示しない
-       const SPEED_HIDE_KMH = 5.0;
-       const SPEED_HIDE_MPS = SPEED_HIDE_KMH / 3.6;
-
-       // SIM
-       let simOn = false;
-       let simTimer = null;
-       let simT = 0;
-       let simHeading = 0;
-
-       // reverse geocoding
+       // ===== reverse geocoding (Nominatim) =====
        const NOMINATIM_REVERSE = "https://nominatim.openstreetmap.org/reverse";
-       const REVERSE_ZOOM = 18;
-       const REV_MIN_MOVE_M = 300;
-       const REV_MIN_INTERVAL_MS = 15000;
-       const REV_MAX_STALE_MS = 180000;
+       const REVERSE_ZOOM = 17;           // streets level
+       const REV_MIN_MOVE_M = 300;        // update only after moving
+       const REV_MIN_INTERVAL_MS = 15000; // throttle
+       const REV_MAX_STALE_MS = 180000;   // refresh even if not moved much
 
        let revLast = null;         // {lat, lon, ts}
        let revInFlight = false;
@@ -407,18 +399,15 @@
            locCommaEl.style.display = (p === "--") ? "none" : "inline";
        }
 
-       // NOTE: angle numeric is not shown; we still rotate arrow internally.
        function setCourse(deg){
            if(deg == null || !isFinite(deg)){
-               headCardEl.textContent = "--";
+               locDirTextEl.textContent = "--";
                headArrowEl.style.transform = "rotate(0deg)";
-               locDirEl.textContent = "--";
                return;
            }
            const d = wrap360(deg);
-           headCardEl.textContent = compass16(d);
-           headArrowEl.style.transform = `rotate(${d}deg)`;
-           locDirEl.textContent = compass16(d);
+           locDirTextEl.textContent = compass16(d);
+           headArrowEl.style.transform = "rotate(" + d + "deg)";
        }
 
        function updateSpeedColor(vKmh){
@@ -469,17 +458,18 @@
 
            displayKmh = expFollow(displayKmh, targetKmh, dt, TAU_DISPLAY);
 
+           // UI更新（50msごと）
            if(ts - lastUiUpdate > 50){
                const shown = Math.max(0, displayKmh);
 
-               if(shown < SPEED_HIDE_KMH){
+               // 5km/h 未満は表示を "--" に
+               if(shown < 5){
                    speedEl.textContent = "--";
                    updateSpeedColor(null);
                }else{
                    speedEl.textContent = formatKmh(shown);
                    updateSpeedColor(shown);
                }
-
                lastUiUpdate = ts;
            }
            rafId = requestAnimationFrame(tick);
@@ -508,11 +498,11 @@
        }
 
        function cacheKey(lat, lon){
-           const r = (x) => Math.round(x * 1000) / 1000; // ~100m grid
+           // ~100m grid
+           const r = (x) => Math.round(x * 1000) / 1000;
            return r(lat) + "," + r(lon);
        }
 
-       // road-first primary
        function parseNominatim(js){
            const a = (js && js.address) ? js.address : {};
 
@@ -520,25 +510,30 @@
            const city  = pick(a.city, a.town, a.village, a.municipality, a.county);
            const ward  = pick(a.city_district, a.suburb, a.borough, a.district);
            const neigh = pick(a.neighbourhood, a.quarter, a.hamlet);
-           const road  = pick(a.road, a.pedestrian, a.cycleway, a.footway, a.path, a.highway);
-           const house = pick(a.house_number);
-           const postcode = pick(a.postcode);
 
+           // road-ish
+           const road  = pick(
+               a.road, a.motorway, a.trunk, a.primary, a.secondary, a.tertiary,
+               a.residential, a.living_street, a.pedestrian, a.cycleway, a.footway, a.path, a.highway
+           );
+           const house = pick(a.house_number);
+
+           // Primary: ROAD first (requested)
            let primary = null;
            if(road){
                primary = road + (house ? (" " + house) : "");
            }else{
-               primary = [city, ward, neigh].filter(Boolean).join(" ");
+               primary = [neigh, ward, city].filter(Boolean).join(" ");
            }
            if(!primary) primary = pick(js.name, js.display_name);
            if(primary && primary.indexOf(",") >= 0) primary = primary.split(",")[0].trim();
            if(!primary) primary = "--";
 
+           // Detail: city/ward/neigh + prefecture
            let detailParts = [];
            const area = [city, ward, neigh].filter(Boolean).join(" ");
            if(area) detailParts.push(area);
            if(pref) detailParts.push(pref);
-           if(postcode) detailParts.push("〒" + postcode);
 
            if(!detailParts.length && js && js.display_name){
                const parts = String(js.display_name).split(",").map(s => s.trim()).filter(Boolean);
@@ -556,9 +551,12 @@
 
            const url =
                NOMINATIM_REVERSE +
-               `?format=jsonv2&lat=${encodeURIComponent(lat)}` +
-               `&lon=${encodeURIComponent(lon)}` +
-               `&zoom=${REVERSE_ZOOM}&addressdetails=1&accept-language=ja`;
+               "?format=jsonv2" +
+               "&lat=" + encodeURIComponent(lat) +
+               "&lon=" + encodeURIComponent(lon) +
+               "&zoom=" + REVERSE_ZOOM +
+               "&addressdetails=1" +
+               "&accept-language=ja";
 
            const resp = await fetch(url, { headers: { "Accept": "application/json" } });
            if(!resp.ok) throw new Error("HTTP " + resp.status);
@@ -606,15 +604,16 @@
 
        function startGps(){
            if(!("geolocation" in navigator)){
-               setGpsStatus("not supported → SIM");
-               setLocation("SIM", "--");
-               enableSim(true);
+               setGpsStatus("not supported");
+               setLocation("--", "loc unavailable");
+               setCourse(null);
                return;
            }
            if(watchId !== null) return;
 
            setGpsStatus("requesting…");
            setLocation("loc…", "--");
+           setCourse(null);
            startLoop();
 
            watchId = navigator.geolocation.watchPosition(
@@ -638,21 +637,23 @@
                        }
                    }
 
+                   // course / heading
                    let courseDeg = null;
+
                    if(typeof c.heading === "number" && isFinite(c.heading)){
                        courseDeg = c.heading;
                    } else if(prev) {
                        if(dt == null) dt = (now.t - prev.t) / 1000;
                        if(dist == null && dt > 0.15) dist = haversineMeters(prev, now);
+
                        if(dt > 0.15 && dist != null && dist > 3){
                            courseDeg = bearingDeg(prev, now);
                        }
                    }
 
+                   // very low speed -> hide course (too noisy)
                    const sp = (speed_mps != null && isFinite(speed_mps)) ? speed_mps : null;
-
-                   // 低速域は方位を出さない（確度文言も出さない）
-                   if(sp != null && sp < SPEED_HIDE_MPS){
+                   if(sp != null && sp < 1.5){
                        setCourse(null);
                    } else if(courseDeg != null){
                        setCourse(courseDeg);
@@ -666,7 +667,9 @@
                        pushTargetSpeed(Math.max(0, speed_mps * 3.6));
                    }
 
+                   // reverse geocode (throttled)
                    maybeUpdatePlace({ lat: now.lat, lon: now.lon });
+
                    setGpsStatus("fix ✓");
                },
                (err) => {
@@ -674,13 +677,17 @@
                    updateSpeedColor(null);
                    setCourse(null);
 
-                   if(err && err.code === 1) setGpsStatus("denied → SIM");
-                   else if(err && err.code === 2) setGpsStatus("unavailable → SIM");
-                   else if(err && err.code === 3) setGpsStatus("timeout → SIM");
-                   else setGpsStatus("error → SIM");
+                   if(err && err.code === 1){
+                       setGpsStatus("denied");
+                   } else if(err && err.code === 2){
+                       setGpsStatus("unavailable");
+                   } else if(err && err.code === 3){
+                       setGpsStatus("timeout");
+                   } else {
+                       setGpsStatus("error");
+                   }
 
-                   setLocation("SIM", "--");
-                   enableSim(true);
+                   setLocation("--", "loc unavailable");
                },
                { enableHighAccuracy: true, maximumAge: 0, timeout: 10000 }
            );
@@ -693,56 +700,9 @@
            revInFlight = false;
        }
 
-       function startSim(){
-           if(simTimer) return;
-           startLoop();
-           setGpsStatus("SIM on");
-           setLocation("SIM", "--");
-
-           simTimer = setInterval(() => {
-               simT += 0.15;
-               const base = 55 + 35*Math.sin(simT*0.45) + 18*Math.sin(simT*1.2);
-               const stopPulse = (Math.sin(simT*0.12) > 0.92) ? 0.18 : 1.0;
-               let v = clamp(base * stopPulse, 0, 115);
-               v = clamp(v + (Math.random()*2.2 - 1.1), 0, 115);
-               pushTargetSpeed(v);
-
-               simHeading = wrap360(simHeading + (Math.random()*18 - 9));
-               if(v < SPEED_HIDE_KMH) setCourse(null);
-               else setCourse(simHeading);
-           }, 250);
-       }
-
-       function stopSim(){
-           if(simTimer){
-               clearInterval(simTimer);
-               simTimer = null;
-           }
-       }
-
-       function enableSim(on){
-           simOn = !!on;
-           if(simBtn){
-               simBtn.classList.toggle("on", simOn);
-               simBtn.textContent = simOn ? "SIM✓" : "SIM";
-           }
-           if(simOn){
-               stopGps();
-               startSim();
-           }else{
-               stopSim();
-               startGps();
-           }
-       }
-
-       if(simBtn){
-           simBtn.addEventListener("click", () => enableSim(!simOn));
-       }
-
-       enableSim(false);
+       startGps();
 
        function cleanup(){
-           stopSim();
            stopGps();
            try{ if(rafId != null){ cancelAnimationFrame(rafId); rafId = null; } }catch{}
        }
