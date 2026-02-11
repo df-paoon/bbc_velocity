@@ -68,7 +68,6 @@
       grid-template-columns: 1fr auto 1fr; /* left spacer / number / unit */
       align-items: baseline;
       column-gap: 12px;
-
       direction: ltr;
       unicode-bidi: isolate;
     }
@@ -83,7 +82,6 @@
     /* Speed big number */
     #speedVal{
       justify-self: center;
-
       font-size:96px;
       font-weight:900;
       line-height:1;
@@ -98,18 +96,14 @@
 
     .speedUnit{
       justify-self: start;
-
       font-size:24px;
       opacity:.85;
       white-space:nowrap;
-
       background: rgba(0,0,0,.08);
       padding: 0 .25em;
       border-radius: .4em;
     }
-    body.dark .speedUnit{
-      background: rgba(255,255,255,.10);
-    }
+    body.dark .speedUnit{ background: rgba(255,255,255,.10); }
 
     .gpsMeta{
       margin-top:8px;
@@ -142,24 +136,22 @@
       background: rgba(0,0,0,.08);
       padding: 0 .35em;
       border-radius: .45em;
-      display:inline-flex;
-      align-items:baseline;
-      gap:6px;
     }
-    body.dark #locDir{
-      background: rgba(255,255,255,.10);
-    }
-    #headArrow{
-      display:inline-block;
-      transform-origin: 50% 60%;
-      line-height:1;
-    }
+    body.dark #locDir{ background: rgba(255,255,255,.10); }
 
     .locDetail{
       margin-top:8px;
       font-family: ui-monospace, Menlo, Consolas, monospace;
       font-size:14px;
       opacity:.78;
+    }
+
+    #headArrow{
+      display:inline-block;
+      transform-origin: 50% 60%;
+      margin-right:6px;
+      font-size:18px;
+      line-height:1;
     }
 
     .statusCard{
@@ -267,16 +259,21 @@
       <div class="gpsMeta"><span id="gpsStatus">GPS: idle</span></div>
     </div>
 
-    <!-- Location + Direction -->
+    <!-- Location + Direction (no degree display) -->
     <div class="speedHero" style="margin-top:12px;">
       <div class="speedLabel">Location / Direction</div>
 
       <div class="locRow" aria-label="Location and direction">
         <span id="locName">--</span>
         <span id="locComma" aria-hidden="true">,</span>
-        <span id="locDir"><span id="headArrow" aria-hidden="true">▲</span><span id="locDirText">--</span></span>
+        <span id="locDir">--</span>
       </div>
       <div class="locDetail"><span id="locDetail">--</span></div>
+
+      <div class="gpsMeta" style="margin-top:10px;">
+        <span id="headArrow" aria-hidden="true" style="display:inline-block;">▲</span>
+        <span class="mono" id="dirEcho">--</span>
+      </div>
     </div>
 
     <div class="statusCard">
@@ -322,14 +319,18 @@
 
    /* ---- GPS speed (fast follow) + color + course + location ---- */
    (function(){
+       const SPEED_HIDE_KMH = 5; // < 5km/h => "--"
+
        const speedEl   = document.getElementById("speedVal");
        const gpsStatus = document.getElementById("gpsStatus");
 
        const locNameEl   = document.getElementById("locName");
-       const locDirTextEl= document.getElementById("locDirText");
+       const locDirEl    = document.getElementById("locDir");
        const locDetailEl = document.getElementById("locDetail");
        const locCommaEl  = document.getElementById("locComma");
+
        const headArrowEl = document.getElementById("headArrow");
+       const dirEchoEl   = document.getElementById("dirEcho");
 
        let watchId = null;
        let last = null; // {lat, lon, t}
@@ -343,16 +344,16 @@
        let lastTickTs = null;
        let lastSampleTs = null;
 
-       // 追従の速さ（秒）
+       // ★ 追従の速さ（秒）
        const TAU_DISPLAY = 0.10;
-       const TAU_INPUT   = 0.05;
+       const TAU_INPUT = 0.05;
 
        // ===== reverse geocoding (Nominatim) =====
        const NOMINATIM_REVERSE = "https://nominatim.openstreetmap.org/reverse";
-       const REVERSE_ZOOM = 17;           // streets level
-       const REV_MIN_MOVE_M = 300;        // update only after moving
-       const REV_MIN_INTERVAL_MS = 15000; // throttle
-       const REV_MAX_STALE_MS = 180000;   // refresh even if not moved much
+       const REVERSE_ZOOM = 18;            // streets level
+       const REV_MIN_MOVE_M = 100;         // relaxed: was 300
+       const REV_MIN_INTERVAL_MS = 15000;  // throttle
+       const REV_MAX_STALE_MS = 180000;    // refresh even if not moved much
 
        let revLast = null;         // {lat, lon, ts}
        let revInFlight = false;
@@ -364,6 +365,7 @@
 
        function formatKmh(v){
            if(v == null || !isFinite(v)) return "--";
+           if(v < SPEED_HIDE_KMH) return "--";
            if(v < 10) return v.toFixed(1);
            return v.toFixed(0);
        }
@@ -401,17 +403,20 @@
 
        function setCourse(deg){
            if(deg == null || !isFinite(deg)){
-               locDirTextEl.textContent = "--";
+               locDirEl.textContent = "--";
+               dirEchoEl.textContent = "--";
                headArrowEl.style.transform = "rotate(0deg)";
                return;
            }
            const d = wrap360(deg);
-           locDirTextEl.textContent = compass16(d);
-           headArrowEl.style.transform = "rotate(" + d + "deg)";
+           const card = compass16(d);
+           locDirEl.textContent = card;
+           dirEchoEl.textContent = card;
+           headArrowEl.style.transform = `rotate(${d}deg)`;
        }
 
        function updateSpeedColor(vKmh){
-           if(vKmh == null || !isFinite(vKmh)){
+           if(vKmh == null || !isFinite(vKmh) || vKmh < SPEED_HIDE_KMH){
                document.body.style.removeProperty("--spd-color");
                document.body.style.removeProperty("--spd-glow");
                return;
@@ -461,15 +466,8 @@
            // UI更新（50msごと）
            if(ts - lastUiUpdate > 50){
                const shown = Math.max(0, displayKmh);
-
-               // 5km/h 未満は表示を "--" に
-               if(shown < 5){
-                   speedEl.textContent = "--";
-                   updateSpeedColor(null);
-               }else{
-                   speedEl.textContent = formatKmh(shown);
-                   updateSpeedColor(shown);
-               }
+               speedEl.textContent = formatKmh(shown);
+               updateSpeedColor(shown);
                lastUiUpdate = ts;
            }
            rafId = requestAnimationFrame(tick);
@@ -505,42 +503,36 @@
 
        function parseNominatim(js){
            const a = (js && js.address) ? js.address : {};
+           const et = (js && js.extratags) ? js.extratags : {};
 
            const pref  = pick(a.state, a.region);
            const city  = pick(a.city, a.town, a.village, a.municipality, a.county);
            const ward  = pick(a.city_district, a.suburb, a.borough, a.district);
            const neigh = pick(a.neighbourhood, a.quarter, a.hamlet);
 
-           // road-ish
-           const road  = pick(
-               a.road, a.motorway, a.trunk, a.primary, a.secondary, a.tertiary,
-               a.residential, a.living_street, a.pedestrian, a.cycleway, a.footway, a.path, a.highway
-           );
+           const road  = pick(a.road, a.pedestrian, a.cycleway, a.footway, a.path, a.highway);
            const house = pick(a.house_number);
 
-           // Primary: ROAD first (requested)
+           // NEW: ref (route number etc.) — needs extratags=1 to be more likely
+           const ref = pick(a.ref, et.ref, et["ref:road"], et["ref:route"], et.route_ref);
+
+           // primary: road name first, else ref, else fallback to neighbourhood/city
            let primary = null;
-           if(road){
-               primary = road + (house ? (" " + house) : "");
-           }else{
+           if(road && ref && road.indexOf(ref) < 0) primary = `${road} (${ref})`;
+           else primary = pick(road, ref);
+
+           if(primary && house) primary = `${primary} ${house}`;
+
+           if(!primary){
                primary = [neigh, ward, city].filter(Boolean).join(" ");
            }
+
            if(!primary) primary = pick(js.name, js.display_name);
            if(primary && primary.indexOf(",") >= 0) primary = primary.split(",")[0].trim();
            if(!primary) primary = "--";
 
-           // Detail: city/ward/neigh + prefecture
-           let detailParts = [];
-           const area = [city, ward, neigh].filter(Boolean).join(" ");
-           if(area) detailParts.push(area);
-           if(pref) detailParts.push(pref);
-
-           if(!detailParts.length && js && js.display_name){
-               const parts = String(js.display_name).split(",").map(s => s.trim()).filter(Boolean);
-               detailParts = parts.slice(0, 3);
-           }
-
-           const detail = detailParts.length ? detailParts.join(" / ") : "--";
+           // detail: area context
+           const detail = [city, ward, neigh, pref].filter(Boolean).join(" / ") || "--";
            return { primary, detail };
        }
 
@@ -549,14 +541,12 @@
            const cached = placeCache.get(key);
            if(cached) return cached;
 
+           // NEW: extratags=1
            const url =
                NOMINATIM_REVERSE +
-               "?format=jsonv2" +
-               "&lat=" + encodeURIComponent(lat) +
-               "&lon=" + encodeURIComponent(lon) +
-               "&zoom=" + REVERSE_ZOOM +
-               "&addressdetails=1" +
-               "&accept-language=ja";
+               `?format=jsonv2&lat=${encodeURIComponent(lat)}` +
+               `&lon=${encodeURIComponent(lon)}` +
+               `&zoom=${REVERSE_ZOOM}&addressdetails=1&accept-language=ja&extratags=1`;
 
            const resp = await fetch(url, { headers: { "Accept": "application/json" } });
            if(!resp.ok) throw new Error("HTTP " + resp.status);
@@ -605,7 +595,7 @@
        function startGps(){
            if(!("geolocation" in navigator)){
                setGpsStatus("not supported");
-               setLocation("--", "loc unavailable");
+               setLocation("--", "--");
                setCourse(null);
                return;
            }
@@ -637,7 +627,7 @@
                        }
                    }
 
-                   // course / heading
+                   // --- course / heading ---
                    let courseDeg = null;
 
                    if(typeof c.heading === "number" && isFinite(c.heading)){
@@ -651,7 +641,7 @@
                        }
                    }
 
-                   // very low speed -> hide course (too noisy)
+                   // very low speed => hide course (too noisy)
                    const sp = (speed_mps != null && isFinite(speed_mps)) ? speed_mps : null;
                    if(sp != null && sp < 1.5){
                        setCourse(null);
@@ -687,7 +677,7 @@
                        setGpsStatus("error");
                    }
 
-                   setLocation("--", "loc unavailable");
+                   setLocation("--", "--");
                },
                { enableHighAccuracy: true, maximumAge: 0, timeout: 10000 }
            );
@@ -700,14 +690,15 @@
            revInFlight = false;
        }
 
-       startGps();
-
        function cleanup(){
            stopGps();
            try{ if(rafId != null){ cancelAnimationFrame(rafId); rafId = null; } }catch{}
        }
+
        window.addEventListener("pagehide", cleanup);
        window.addEventListener("beforeunload", cleanup);
+
+       startGps();
    })();
 
    /* ---- audio ---- */
